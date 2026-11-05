@@ -1,1416 +1,1674 @@
-// Motor 3D de la DS: geometría (órdenes, matrices, luces, recorte) y rasterizador.
-//
-// El juego manda órdenes por la FIFO (0x04000400, empaquetadas de 4 en 4) o
-// por puertos directos (0x04000440 + 4 * (orden - 0x10)). Los vértices se
-// transforman al llegar y los polígonos se guardan en una lista; cuando el
-// juego pide SWAP_BUFFERS, en la siguiente VBlank se pinta la lista entera en
-// una imagen de 256x192 que el motor 2D A usa como fondo 0.
-//
-// Se calcula en coma flotante (la DS usa coma fija): pequeñas diferencias de
-// redondeo, pero mucho más sencillo.
+// 3D engine of the DS: geometry (commands, matrices, lights, clipping) and rasterizer.
+// The game sends commands through the FIFO (0x04000400, packed 4 by 4) or
+// through direct ports (0x04000440 + 4 * (command - 0x10)). Vertices are
+// transformed on arrival and polygons are kept in a list. When the
+// game asks for SWAP_BUFFERS, on the next VBlank the whole list is painted into
+// an image of 256x192 that the 2D engine A uses as background 0.
+// Floating point is used (the DS uses fixed point): small differences of
+// rounding, but much simpler.
 #include "gpu3d.h"
+#include "log.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
 extern uint8_t *g_tex[4], *g_texpal[6];
+// copy of the texture and palette memory maps, taken when a scene is handed to the drawing thread.
+// video.c clears and refills g_tex and g_texpal every time the game remaps a VRAM bank, and the
+// drawing thread reading them in that gap got NULL, which came out as black pixels coming and going
+// on models in menus
+static uint8_t *snap_tex[4], *snap_pal[6];
+// and a private copy of the CONTENT of the mapped texture and palette memory (about 600 KB, a few
+// tenths of a ms): the game keeps rewriting textures and palettes (the emblem, animated models)
+// while the drawing thread reads them, which gave torn or black pixels. The real DS draws a scene
+// from the memory as it is at the swap
+static uint8_t copy_tex[4][0x20000], copy_pal[6][0x4000];
 
-typedef float Mat[16];  // fila por fila; vector fila: v' = v * M
+typedef float Mat[16]; // row by row. Row vector: v' = v * M
 
-// ---- estado del motor de geometría ------------------------------------------
+//---- state of the geometry engine ----
 static Mat proj, pos, vec, tex;
-static Mat pila_proj[1], pila_pos[32], pila_vec[32], pila_tex[1];
-static int sp_proj, sp_pos, sp_tex, modo_mtx;
-static int error_pila;
+static Mat stack_proj[1], stack_pos[32], stack_vec[32], stack_tex[1];
+static int sp_proj, sp_pos, sp_tex, mode_mtx;
+static int error_stack;
 
-static uint32_t d_pl_min = 0xFFFF, d_pl_max;  // PLTT_BASE recibidos (depuración)
-static uint32_t attr_pendiente, attr;   // POLYGON_ATTR (se aplica en BEGIN_VTXS)
+static uint32_t d_pl_min = 0xFFFF, d_pl_max; // PLTT_BASE received (debug)
+static uint32_t attr_pending, attr; // POLYGON_ATTR (applied at BEGIN_VTXS)
 static uint32_t teximage, pltt_base;
-static int tipo_prim;
-static float vx, vy, vz;                 // último vértice (para VTX_XY, VTX_DIFF...)
+static int type_prim;
+static float vx, vy, vz; // last vertex (for VTX_XY, VTX_DIFF...)
 static float col_r = 31, col_g = 31, col_b = 31;
-static float ts, tt;                     // coordenadas de textura actuales (en texels)
-static float ts0, tt0;                   // las que se dieron con TEXCOORD (para los modos 2 y 3)
+static float ts, tt; // current texture coordinates (in texels)
+static float ts0, tt0; // those given with TEXCOORD (for modes 2 and 3)
 static uint32_t dif_amb, spe_emi;
-static float luz_dir[4][3], luz_col[4][3];
-static uint8_t brillo_tabla[128];
+static float light_dir[4][3], light_col[4][3];
+static uint8_t brightness_table[128];
 static int vp_x1, vp_y1 = 0, vp_x2 = 255, vp_y2 = 191;
 
-// ---- lista de polígonos ------------------------------------------------------
-typedef struct {
-    float x, y, z, w;     // coordenadas de recorte
-    float r, g, b;        // color 0..31
-    float s, t;           // texels
+//---- polygon list ----
+typedef struct
+{
+  float x, y, z, w; // clip coordinates
+  float r, g, b; // color 0..31
+  float s, t; // texels
 } Vert;
 
-#define MAX_VERT_POLI 10
-typedef struct {
-    Vert v[MAX_VERT_POLI];
-    int n;                // vértices tras recortar (0 si queda fuera de la vista)
-    uint32_t attr, teximage, pltt;
-    int translucido;
-    Vert crudo[4];        // sin recortar: para las imágenes intermedias (MKDS_FPS)
-    int ncrudo;
-} Poli;
+#define MAX_VERT_POLY 10
+typedef struct
+{
+  Vert v[MAX_VERT_POLY];
+  int n; // vertices after clipping (0 if outside the view)
+  uint32_t attr, teximage, pltt;
+  int translucent;
+} Poly;
 
-#define MAX_POLIS 4096
-static Poli polis[2][MAX_POLIS];
-static int npolis[2], lista;  // lista = la que se está llenando (con los que quedan fuera de la vista)
-static int nvisibles[2];      // los que se ven (lo que cuenta la consola)
-static int swap_pendiente, swap_param;
+#define MAX_POLYS 4096
+static Poly polys[2][MAX_POLYS];
+static int npolis[2], list; // list = the one being filled (with those that fall outside the view)
+static int nvisible[2]; // the ones seen (what the console counts)
+static int swap_pending, swap_param;
 
-static Vert tira[4];   // vértices pendientes de formar polígono
-static int ntira, nvert_prim, impar;
+static Vert strip[4]; // vertices waiting to form a polygon
+static int ntira, nvert_prim, odd;
 
 // ---- matrices ----------------------------------------------------------------
-static void identidad(float *m) {
-    memset(m, 0, sizeof(Mat));
-    m[0] = m[5] = m[10] = m[15] = 1;
+static void identity(float* m)
+{
+  memset(m, 0, sizeof(Mat));
+  m[0] = m[5] = m[10] = m[15] = 1;
 }
 
-static void mult(float *dst, const float *a, const float *b) {  // dst = a * b
-    Mat r;
-    for (int i = 0; i < 4; i++)
-        for (int j = 0; j < 4; j++)
-            r[i * 4 + j] = a[i * 4] * b[j] + a[i * 4 + 1] * b[4 + j] + a[i * 4 + 2] * b[8 + j] + a[i * 4 + 3] * b[12 + j];
-    memcpy(dst, r, sizeof(Mat));
+static void mult(float* dst, const float* a, const float* b)
+{ // dst = a * b
+  Mat r;
+  for (int i = 0; i < 4; i++)
+    for (int j = 0; j < 4; j++)
+      r[i * 4 + j] = a[i * 4] * b[j] + a[i * 4 + 1] * b[4 + j] + a[i * 4 + 2] * b[8 + j] +
+                     a[i * 4 + 3] * b[12 + j];
+  memcpy(dst, r, sizeof(Mat));
 }
 
-static void clip(float *m) { mult(m, pos, proj); }
-
-// Aplica una matriz (cur = m * cur) según el modo
-static void aplica(const float *m, int tambien_vec) {
-    switch (modo_mtx) {
-    case 0: mult(proj, m, proj); break;
-    case 1: mult(pos, m, pos); break;
-    case 2: mult(pos, m, pos); if (tambien_vec) mult(vec, m, vec); break;
-    case 3: mult(tex, m, tex); break;
-    }
+static void clip(float* m)
+{
+  mult(m, pos, proj);
 }
 
-static void carga(const float *m) {
-    switch (modo_mtx) {
-    case 0: memcpy(proj, m, sizeof(Mat)); break;
-    case 1: memcpy(pos, m, sizeof(Mat)); break;
-    case 2: memcpy(pos, m, sizeof(Mat)); memcpy(vec, m, sizeof(Mat)); break;
-    case 3: memcpy(tex, m, sizeof(Mat)); break;
-    }
+// Applies a matrix (cur = m * cur) according to the mode
+static void apply(const float* m, int also_vec)
+{
+  switch (mode_mtx)
+  {
+  case 0:
+    mult(proj, m, proj);
+    break;
+  case 1:
+    mult(pos, m, pos);
+    break;
+  case 2:
+    mult(pos, m, pos);
+    if (also_vec)
+      mult(vec, m, vec);
+    break;
+  case 3:
+    mult(tex, m, tex);
+    break;
+  }
 }
 
-static float f12(uint32_t v) { return (float)(int32_t)v / 4096.0f; }
-static float s16_12(uint32_t v) { return (float)(int16_t)(v & 0xFFFF) / 4096.0f; }
-static float s10(uint32_t v, int bit, float div) {
-    int32_t x = (int32_t)((v >> bit) & 0x3FF);
-    if (x & 0x200) x -= 0x400;
-    return (float)x / div;
+static void load(const float* m)
+{
+  switch (mode_mtx)
+  {
+  case 0:
+    memcpy(proj, m, sizeof(Mat));
+    break;
+  case 1:
+    memcpy(pos, m, sizeof(Mat));
+    break;
+  case 2:
+    memcpy(pos, m, sizeof(Mat));
+    memcpy(vec, m, sizeof(Mat));
+    break;
+  case 3:
+    memcpy(tex, m, sizeof(Mat));
+    break;
+  }
+}
+
+static float f12(uint32_t v)
+{
+  return (float)(int32_t)v / 4096.0f;
+}
+static float s16_12(uint32_t v)
+{
+  return (float)(int16_t)(v & 0xFFFF) / 4096.0f;
+}
+static float s10(uint32_t v, int bit, float div)
+{
+  int32_t x = (int32_t)((v >> bit) & 0x3FF);
+  if (x & 0x200)
+    x -= 0x400;
+  return (float)x / div;
 }
 
 // ---- luces -------------------------------------------------------------------
-static void color15(uint32_t c, float *r, float *g, float *b) {
-    *r = (float)(c & 31); *g = (float)((c >> 5) & 31); *b = (float)((c >> 10) & 31);
+static void color15(uint32_t c, float* r, float* g, float* b)
+{
+  *r = (float)(c & 31);
+  *g = (float)((c >> 5) & 31);
+  *b = (float)((c >> 10) & 31);
 }
 
-static void normal(uint32_t p) {
-    float n[3] = {s10(p, 0, 512), s10(p, 10, 512), s10(p, 20, 512)};
-    // coordenadas de textura a partir de la normal (modo 2)
-    if (((teximage >> 30) & 3) == 2) {
-        ts = (n[0] * tex[0] + n[1] * tex[4] + n[2] * tex[8]) / 16 + ts0;  // el resultado va en 1/16 de texel
-        tt = (n[0] * tex[1] + n[1] * tex[5] + n[2] * tex[9]) / 16 + tt0;
-    }
-    float tn[3];
-    for (int j = 0; j < 3; j++) tn[j] = n[0] * vec[j] + n[1] * vec[4 + j] + n[2] * vec[8 + j];
-    float dr, dg, db, ar, ag, ab, sr, sg, sb, er, eg, eb;
-    color15(dif_amb, &dr, &dg, &db);
-    color15(dif_amb >> 16, &ar, &ag, &ab);
-    color15(spe_emi, &sr, &sg, &sb);
-    color15(spe_emi >> 16, &er, &eg, &eb);
-    float r = er, g = eg, b = eb;
-    for (int l = 0; l < 4; l++) {
-        if (!((attr >> l) & 1)) continue;
-        float *L = luz_dir[l];
-        float dif = -(L[0] * tn[0] + L[1] * tn[1] + L[2] * tn[2]);
-        if (dif < 0) dif = 0;
-        float h[3] = {(L[0]) / 2, (L[1]) / 2, (L[2] - 1) / 2};
-        float spec = -(h[0] * tn[0] + h[1] * tn[1] + h[2] * tn[2]);
-        if (spec < 0) spec = 0;
-        spec = spec * spec;
-        if (spec > 1) spec = 1;
-        if ((spe_emi >> 15) & 1) spec = brillo_tabla[(int)(spec * 127)] / 255.0f;
-        float *C = luz_col[l];
-        r += C[0] * (dr * dif + sr * spec + ar) / 31;
-        g += C[1] * (dg * dif + sg * spec + ag) / 31;
-        b += C[2] * (db * dif + sb * spec + ab) / 31;
-    }
-    col_r = r > 31 ? 31 : r;
-    col_g = g > 31 ? 31 : g;
-    col_b = b > 31 ? 31 : b;
+static void normal(uint32_t p)
+{
+  float n[3] = {s10(p, 0, 512), s10(p, 10, 512), s10(p, 20, 512)};
+  // texture coordinates from the normal (mode 2)
+  if (((teximage >> 30) & 3) == 2)
+  {
+    ts = (n[0] * tex[0] + n[1] * tex[4] + n[2] * tex[8]) / 16 +
+         ts0; // the result is in 1/16 of a texel
+    tt = (n[0] * tex[1] + n[1] * tex[5] + n[2] * tex[9]) / 16 + tt0;
+  }
+  float tn[3];
+  for (int j = 0; j < 3; j++)
+    tn[j] = n[0] * vec[j] + n[1] * vec[4 + j] + n[2] * vec[8 + j];
+  float dr, dg, db, ar, ag, ab, sr, sg, sb, er, eg, eb;
+  color15(dif_amb, &dr, &dg, &db);
+  color15(dif_amb >> 16, &ar, &ag, &ab);
+  color15(spe_emi, &sr, &sg, &sb);
+  color15(spe_emi >> 16, &er, &eg, &eb);
+  float r = er, g = eg, b = eb;
+  for (int l = 0; l < 4; l++)
+  {
+    if (!((attr >> l) & 1))
+      continue;
+    float* L = light_dir[l];
+    float dif = -(L[0] * tn[0] + L[1] * tn[1] + L[2] * tn[2]);
+    if (dif < 0)
+      dif = 0;
+    float h[3] = {(L[0]) / 2, (L[1]) / 2, (L[2] - 1) / 2};
+    float spec = -(h[0] * tn[0] + h[1] * tn[1] + h[2] * tn[2]);
+    if (spec < 0)
+      spec = 0;
+    spec = spec * spec;
+    if (spec > 1)
+      spec = 1;
+    if ((spe_emi >> 15) & 1)
+      spec = brightness_table[(int)(spec * 127)] / 255.0f;
+    float* C = light_col[l];
+    r += C[0] * (dr * dif + sr * spec + ar) / 31;
+    g += C[1] * (dg * dif + sg * spec + ag) / 31;
+    b += C[2] * (db * dif + sb * spec + ab) / 31;
+  }
+  col_r = r > 31 ? 31 : r;
+  col_g = g > 31 ? 31 : g;
+  col_b = b > 31 ? 31 : b;
 }
 
-// ---- recorte contra la pirámide de visión ----------------------------------------
-static Vert interp(const Vert *a, const Vert *b, float t) {
-    Vert v;
-    v.x = a->x + (b->x - a->x) * t; v.y = a->y + (b->y - a->y) * t;
-    v.z = a->z + (b->z - a->z) * t; v.w = a->w + (b->w - a->w) * t;
-    v.r = a->r + (b->r - a->r) * t; v.g = a->g + (b->g - a->g) * t; v.b = a->b + (b->b - a->b) * t;
-    v.s = a->s + (b->s - a->s) * t; v.t = a->t + (b->t - a->t) * t;
-    return v;
+//---- clipping against the view pyramid ----
+static Vert interp(const Vert* a, const Vert* b, float t)
+{
+  Vert v;
+  v.x = a->x + (b->x - a->x) * t;
+  v.y = a->y + (b->y - a->y) * t;
+  v.z = a->z + (b->z - a->z) * t;
+  v.w = a->w + (b->w - a->w) * t;
+  v.r = a->r + (b->r - a->r) * t;
+  v.g = a->g + (b->g - a->g) * t;
+  v.b = a->b + (b->b - a->b) * t;
+  v.s = a->s + (b->s - a->s) * t;
+  v.t = a->t + (b->t - a->t) * t;
+  return v;
 }
 
-static float distancia(const Vert *v, int plano) {
-    switch (plano) {
-    case 0: return v->w + v->x;
-    case 1: return v->w - v->x;
-    case 2: return v->w + v->y;
-    case 3: return v->w - v->y;
-    case 4: return v->w + v->z;
-    default: return v->w - v->z;
-    }
+static float distance(const Vert* v, int plane)
+{
+  switch (plane)
+  {
+  case 0:
+    return v->w + v->x;
+  case 1:
+    return v->w - v->x;
+  case 2:
+    return v->w + v->y;
+  case 3:
+    return v->w - v->y;
+  case 4:
+    return v->w + v->z;
+  default:
+    return v->w - v->z;
+  }
 }
 
-static int recorta(Vert *v, int n) {
-    Vert tmp[MAX_VERT_POLI + 6];
-    Vert ent[MAX_VERT_POLI + 6];
-    memcpy(ent, v, sizeof(Vert) * n);
-    for (int p = 0; p < 6; p++) {
-        int m = 0;
-        for (int i = 0; i < n; i++) {
-            Vert *a = &ent[i], *b = &ent[(i + 1) % n];
-            float da = distancia(a, p), db = distancia(b, p);
-            if (da >= 0) tmp[m++] = *a;
-            if ((da >= 0) != (db >= 0)) tmp[m++] = interp(a, b, da / (da - db));
-            if (m >= MAX_VERT_POLI + 5) break;
-        }
-        n = m;
-        memcpy(ent, tmp, sizeof(Vert) * n);
-        if (n < 3) return 0;
-    }
-    if (n > MAX_VERT_POLI) n = MAX_VERT_POLI;
-    memcpy(v, ent, sizeof(Vert) * n);
-    return n;
-}
-
-static void emite(Vert *v, int n) {
-    if (npolis[lista] >= MAX_POLIS) return;
-    Poli *p = &polis[lista][npolis[lista]];
-    // también los que quedan fuera de la vista (con n = 0): así la lista de una escena y la de la siguiente
-    // tienen la misma forma y se pueden emparejar para las imágenes intermedias
-    p->ncrudo = n <= 4 ? n : 0;
-    if (n <= 4) memcpy(p->crudo, v, sizeof(Vert) * n);
-    memcpy(p->v, v, sizeof(Vert) * n);
-    n = recorta(p->v, n);
-    if (n < 3) n = 0;
-    else nvisibles[lista]++;
-    p->n = n;
-    p->attr = attr;
-    p->teximage = teximage;
-    p->pltt = pltt_base;
-    int alfa = (attr >> 16) & 31;
-    int fmt = (teximage >> 26) & 7;
-    p->translucido = (alfa > 0 && alfa < 31) || fmt == 1 || fmt == 6;
-    npolis[lista]++;
-}
-
-static void vertice(float x, float y, float z) {
-    vx = x; vy = y; vz = z;
-    Mat c;
-    clip(c);
-    Vert v;
-    v.x = x * c[0] + y * c[4] + z * c[8] + c[12];
-    v.y = x * c[1] + y * c[5] + z * c[9] + c[13];
-    v.z = x * c[2] + y * c[6] + z * c[10] + c[14];
-    v.w = x * c[3] + y * c[7] + z * c[11] + c[15];
-    v.r = col_r; v.g = col_g; v.b = col_b;
-    if (((teximage >> 30) & 3) == 3) {  // coordenadas de textura desde el vértice
-        v.s = (x * tex[0] + y * tex[4] + z * tex[8]) / 16 + ts0;
-        v.t = (x * tex[1] + y * tex[5] + z * tex[9]) / 16 + tt0;
-    } else {
-        v.s = ts; v.t = tt;
-    }
-    tira[ntira++] = v;
-    switch (tipo_prim) {
-    case 0:  // triángulos
-        if (ntira == 3) { emite(tira, 3); ntira = 0; }
-        break;
-    case 1:  // cuadriláteros
-        if (ntira == 4) { emite(tira, 4); ntira = 0; }
-        break;
-    case 2:  // tira de triángulos
-        if (ntira == 3) {
-            Vert t[3] = {tira[0], tira[1], tira[2]};
-            if (impar) { t[0] = tira[1]; t[1] = tira[0]; }
-            emite(t, 3);
-            impar ^= 1;
-            tira[0] = tira[1]; tira[1] = tira[2];
-            ntira = 2;
-        }
-        break;
-    case 3:  // tira de cuadriláteros
-        if (ntira == 4) {
-            Vert q[4] = {tira[0], tira[1], tira[3], tira[2]};
-            emite(q, 4);
-            tira[0] = tira[2]; tira[1] = tira[3];
-            ntira = 2;
-        }
+static int clip_poly(Vert* v, int n)
+{
+  Vert tmp[MAX_VERT_POLY + 6];
+  Vert ent[MAX_VERT_POLY + 6];
+  memcpy(ent, v, sizeof(Vert) * n);
+  for (int p = 0; p < 6; p++)
+  {
+    int m = 0;
+    for (int i = 0; i < n; i++)
+    {
+      Vert *a = &ent[i], *b = &ent[(i + 1) % n];
+      float da = distance(a, p), db = distance(b, p);
+      if (da >= 0)
+        tmp[m++] = *a;
+      if ((da >= 0) != (db >= 0))
+        tmp[m++] = interp(a, b, da / (da - db));
+      if (m >= MAX_VERT_POLY + 5)
         break;
     }
-    nvert_prim++;
+    n = m;
+    memcpy(ent, tmp, sizeof(Vert) * n);
+    if (n < 3)
+      return 0;
+  }
+  if (n > MAX_VERT_POLY)
+    n = MAX_VERT_POLY;
+  memcpy(v, ent, sizeof(Vert) * n);
+  return n;
 }
 
-// ---- órdenes -------------------------------------------------------------------
+static void emit(Vert* v, int n)
+{
+  if (npolis[list] >= MAX_POLYS)
+    return;
+  Poly* p = &polys[list][npolis[list]];
+  // also those outside the view (with n = 0): so the list of a scene and the one of the next
+  // have the same shape and can be paired for the in-between images
+  memcpy(p->v, v, sizeof(Vert) * n);
+  n = clip_poly(p->v, n);
+  if (n < 3)
+    n = 0;
+  else
+    nvisible[list]++;
+  p->n = n;
+  p->attr = attr;
+  p->teximage = teximage;
+  p->pltt = pltt_base;
+  int alpha = (attr >> 16) & 31;
+  int fmt = (teximage >> 26) & 7;
+  p->translucent = (alpha > 0 && alpha < 31) || fmt == 1 || fmt == 6;
+  npolis[list]++;
+}
+
+static void vertex(float x, float y, float z)
+{
+  vx = x;
+  vy = y;
+  vz = z;
+  Mat c;
+  clip(c);
+  Vert v;
+  v.x = x * c[0] + y * c[4] + z * c[8] + c[12];
+  v.y = x * c[1] + y * c[5] + z * c[9] + c[13];
+  v.z = x * c[2] + y * c[6] + z * c[10] + c[14];
+  v.w = x * c[3] + y * c[7] + z * c[11] + c[15];
+  v.r = col_r;
+  v.g = col_g;
+  v.b = col_b;
+  if (((teximage >> 30) & 3) == 3)
+  { // texture coordinates from the vertex
+    v.s = (x * tex[0] + y * tex[4] + z * tex[8]) / 16 + ts0;
+    v.t = (x * tex[1] + y * tex[5] + z * tex[9]) / 16 + tt0;
+  }
+  else
+  {
+    v.s = ts;
+    v.t = tt;
+  }
+  strip[ntira++] = v;
+  switch (type_prim)
+  {
+  case 0: // triangles
+    if (ntira == 3)
+    {
+      emit(strip, 3);
+      ntira = 0;
+    }
+    break;
+  case 1: // quads
+    if (ntira == 4)
+    {
+      emit(strip, 4);
+      ntira = 0;
+    }
+    break;
+  case 2: // triangle strip
+    if (ntira == 3)
+    {
+      Vert t[3] = {strip[0], strip[1], strip[2]};
+      if (odd)
+      {
+        t[0] = strip[1];
+        t[1] = strip[0];
+      }
+      emit(t, 3);
+      odd ^= 1;
+      strip[0] = strip[1];
+      strip[1] = strip[2];
+      ntira = 2;
+    }
+    break;
+  case 3: // quad strip
+    if (ntira == 4)
+    {
+      Vert q[4] = {strip[0], strip[1], strip[3], strip[2]};
+      emit(q, 4);
+      strip[0] = strip[2];
+      strip[1] = strip[3];
+      ntira = 2;
+    }
+    break;
+  }
+  nvert_prim++;
+}
+
+//---- commands ----
 static const int n_param[256] = {
-    [0x10] = 1, [0x11] = 0, [0x12] = 1, [0x13] = 1, [0x14] = 1, [0x15] = 0, [0x16] = 16, [0x17] = 12,
-    [0x18] = 16, [0x19] = 12, [0x1A] = 9, [0x1B] = 3, [0x1C] = 3,
-    [0x20] = 1, [0x21] = 1, [0x22] = 1, [0x23] = 2, [0x24] = 1, [0x25] = 1, [0x26] = 1, [0x27] = 1,
-    [0x28] = 1, [0x29] = 1, [0x2A] = 1, [0x2B] = 1,
-    [0x30] = 1, [0x31] = 1, [0x32] = 1, [0x33] = 1, [0x34] = 32,
-    [0x40] = 1, [0x41] = 0, [0x50] = 1, [0x60] = 1, [0x70] = 3, [0x71] = 2, [0x72] = 1,
+    [0x10] = 1,  [0x11] = 0,  [0x12] = 1,  [0x13] = 1, [0x14] = 1, [0x15] = 0, [0x16] = 16,
+    [0x17] = 12, [0x18] = 16, [0x19] = 12, [0x1A] = 9, [0x1B] = 3, [0x1C] = 3, [0x20] = 1,
+    [0x21] = 1,  [0x22] = 1,  [0x23] = 2,  [0x24] = 1, [0x25] = 1, [0x26] = 1, [0x27] = 1,
+    [0x28] = 1,  [0x29] = 1,  [0x2A] = 1,  [0x2B] = 1, [0x30] = 1, [0x31] = 1, [0x32] = 1,
+    [0x33] = 1,  [0x34] = 32, [0x40] = 1,  [0x41] = 0, [0x50] = 1, [0x60] = 1, [0x70] = 3,
+    [0x71] = 2,  [0x72] = 1,
 };
-static const uint8_t orden_valida[256] = {
+static const uint8_t command_valid[256] = {
     [0x10] = 1, [0x11] = 1, [0x12] = 1, [0x13] = 1, [0x14] = 1, [0x15] = 1, [0x16] = 1, [0x17] = 1,
-    [0x18] = 1, [0x19] = 1, [0x1A] = 1, [0x1B] = 1, [0x1C] = 1,
-    [0x20] = 1, [0x21] = 1, [0x22] = 1, [0x23] = 1, [0x24] = 1, [0x25] = 1, [0x26] = 1, [0x27] = 1,
-    [0x28] = 1, [0x29] = 1, [0x2A] = 1, [0x2B] = 1,
-    [0x30] = 1, [0x31] = 1, [0x32] = 1, [0x33] = 1, [0x34] = 1,
-    [0x40] = 1, [0x41] = 1, [0x50] = 1, [0x60] = 1, [0x70] = 1, [0x71] = 1, [0x72] = 1,
+    [0x18] = 1, [0x19] = 1, [0x1A] = 1, [0x1B] = 1, [0x1C] = 1, [0x20] = 1, [0x21] = 1, [0x22] = 1,
+    [0x23] = 1, [0x24] = 1, [0x25] = 1, [0x26] = 1, [0x27] = 1, [0x28] = 1, [0x29] = 1, [0x2A] = 1,
+    [0x2B] = 1, [0x30] = 1, [0x31] = 1, [0x32] = 1, [0x33] = 1, [0x34] = 1, [0x40] = 1, [0x41] = 1,
+    [0x50] = 1, [0x60] = 1, [0x70] = 1, [0x71] = 1, [0x72] = 1,
 };
 
 static float pos_res[4], vec_res[3];
-static int caja_dentro = 1;
+static int box_inside = 1;
 
-static void ejecuta(int cmd, const uint32_t *p) {
-    Mat m;
-    switch (cmd) {
-    case 0x10: modo_mtx = p[0] & 3; break;
-    case 0x11:  // PUSH
-        if (modo_mtx == 0) { memcpy(pila_proj[0], proj, sizeof(Mat)); sp_proj = 1; }
-        else if (modo_mtx == 3) { memcpy(pila_tex[0], tex, sizeof(Mat)); sp_tex = 1; }
-        else {
-            if (sp_pos >= 31) { error_pila = 1; break; }
-            memcpy(pila_pos[sp_pos], pos, sizeof(Mat));
-            memcpy(pila_vec[sp_pos], vec, sizeof(Mat));
-            sp_pos++;
-        }
-        break;
-    case 0x12: {  // POP
-        if (modo_mtx == 0) { sp_proj = 0; memcpy(proj, pila_proj[0], sizeof(Mat)); }
-        else if (modo_mtx == 3) { sp_tex = 0; memcpy(tex, pila_tex[0], sizeof(Mat)); }
-        else {
-            int n = (int)(p[0] & 63);
-            if (n & 32) n -= 64;
-            sp_pos -= n;
-            if (sp_pos < 0) { sp_pos = 0; error_pila = 1; }
-            if (sp_pos > 31) { sp_pos = 31; error_pila = 1; }
-            memcpy(pos, pila_pos[sp_pos], sizeof(Mat));
-            memcpy(vec, pila_vec[sp_pos], sizeof(Mat));
-        }
-        break;
+static void run(int cmd, const uint32_t* p)
+{
+  Mat m;
+  switch (cmd)
+  {
+  case 0x10:
+    mode_mtx = p[0] & 3;
+    break;
+  case 0x11: // PUSH
+    if (mode_mtx == 0)
+    {
+      memcpy(stack_proj[0], proj, sizeof(Mat));
+      sp_proj = 1;
     }
-    case 0x13:  // STORE
-        if (modo_mtx == 0) memcpy(pila_proj[0], proj, sizeof(Mat));
-        else if (modo_mtx == 3) memcpy(pila_tex[0], tex, sizeof(Mat));
-        else {
-            int n = p[0] & 31;
-            if (n == 31) error_pila = 1;
-            memcpy(pila_pos[n], pos, sizeof(Mat));
-            memcpy(pila_vec[n], vec, sizeof(Mat));
-        }
-        break;
-    case 0x14:  // RESTORE
-        if (modo_mtx == 0) memcpy(proj, pila_proj[0], sizeof(Mat));
-        else if (modo_mtx == 3) memcpy(tex, pila_tex[0], sizeof(Mat));
-        else {
-            int n = p[0] & 31;
-            memcpy(pos, pila_pos[n], sizeof(Mat));
-            memcpy(vec, pila_vec[n], sizeof(Mat));
-        }
-        break;
-    case 0x15: identidad(m); carga(m); break;
-    case 0x16: for (int i = 0; i < 16; i++) m[i] = f12(p[i]); carga(m); break;
-    case 0x17:
-        identidad(m);
-        for (int i = 0; i < 4; i++) for (int j = 0; j < 3; j++) m[i * 4 + j] = f12(p[i * 3 + j]);
-        carga(m);
-        break;
-    case 0x18: for (int i = 0; i < 16; i++) m[i] = f12(p[i]); aplica(m, 1); break;
-    case 0x19:
-        identidad(m);
-        for (int i = 0; i < 4; i++) for (int j = 0; j < 3; j++) m[i * 4 + j] = f12(p[i * 3 + j]);
-        aplica(m, 1);
-        break;
-    case 0x1A:
-        identidad(m);
-        for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) m[i * 4 + j] = f12(p[i * 3 + j]);
-        aplica(m, 1);
-        break;
-    case 0x1B:  // SCALE (no afecta a la matriz de vectores)
-        identidad(m);
-        m[0] = f12(p[0]); m[5] = f12(p[1]); m[10] = f12(p[2]);
-        aplica(m, 0);
-        break;
-    case 0x1C:
-        identidad(m);
-        m[12] = f12(p[0]); m[13] = f12(p[1]); m[14] = f12(p[2]);
-        aplica(m, 1);
-        break;
-    case 0x20: color15(p[0], &col_r, &col_g, &col_b); break;
-    case 0x21: normal(p[0]); break;
-    case 0x22: {
-        float s = (float)(int16_t)(p[0] & 0xFFFF) / 16.0f, t = (float)(int16_t)(p[0] >> 16) / 16.0f;
-        ts0 = s; tt0 = t;
-        if (((teximage >> 30) & 3) == 1) {  // transformadas por la matriz de textura
-            ts = s * tex[0] + t * tex[4] + (tex[8] + tex[12]) / 16;
-            tt = s * tex[1] + t * tex[5] + (tex[9] + tex[13]) / 16;
-        } else {
-            ts = s; tt = t;
-        }
-        break;
+    else if (mode_mtx == 3)
+    {
+      memcpy(stack_tex[0], tex, sizeof(Mat));
+      sp_tex = 1;
     }
-    case 0x23: vertice(s16_12(p[0]), s16_12(p[0] >> 16), s16_12(p[1])); break;
-    case 0x24: vertice(s10(p[0], 0, 64), s10(p[0], 10, 64), s10(p[0], 20, 64)); break;
-    case 0x25: vertice(s16_12(p[0]), s16_12(p[0] >> 16), vz); break;
-    case 0x26: vertice(s16_12(p[0]), vy, s16_12(p[0] >> 16)); break;
-    case 0x27: vertice(vx, s16_12(p[0]), s16_12(p[0] >> 16)); break;
-    case 0x28:  // VTX_DIFF: 10 bits con signo que se suman tal cual en unidades de 4.12
-        vertice(vx + s10(p[0], 0, 4096), vy + s10(p[0], 10, 4096), vz + s10(p[0], 20, 4096));
+    else
+    {
+      if (sp_pos >= 31)
+      {
+        error_stack = 1;
         break;
-    case 0x29: attr_pendiente = p[0]; break;
-    case 0x2A: teximage = p[0]; break;
-    case 0x2B:
-        pltt_base = p[0] & 0x1FFF;
-        if (pltt_base < d_pl_min) d_pl_min = pltt_base;
-        if (pltt_base > d_pl_max) d_pl_max = pltt_base;
-        break;
-    case 0x30:
-        dif_amb = p[0];
-        if (p[0] & 0x8000) color15(p[0], &col_r, &col_g, &col_b);
-        break;
-    case 0x31: spe_emi = p[0]; break;
-    case 0x32: {
-        int l = (p[0] >> 30) & 3;
-        float L[3] = {s10(p[0], 0, 512), s10(p[0], 10, 512), s10(p[0], 20, 512)};
-        for (int j = 0; j < 3; j++) luz_dir[l][j] = L[0] * vec[j] + L[1] * vec[4 + j] + L[2] * vec[8 + j];
-        break;
+      }
+      memcpy(stack_pos[sp_pos], pos, sizeof(Mat));
+      memcpy(stack_vec[sp_pos], vec, sizeof(Mat));
+      sp_pos++;
     }
-    case 0x33: {
-        int l = (p[0] >> 30) & 3;
-        color15(p[0], &luz_col[l][0], &luz_col[l][1], &luz_col[l][2]);
-        break;
+    break;
+  case 0x12:
+  { // POP
+    if (mode_mtx == 0)
+    {
+      sp_proj = 0;
+      memcpy(proj, stack_proj[0], sizeof(Mat));
     }
-    case 0x34: for (int i = 0; i < 32; i++) memcpy(brillo_tabla + i * 4, &p[i], 4); break;
-    case 0x40:
-        tipo_prim = p[0] & 3;
-        attr = attr_pendiente;
-        ntira = 0; nvert_prim = 0; impar = 0;
-        break;
-    case 0x41: break;
-    case 0x50: swap_pendiente = 1; swap_param = p[0] & 3; break;
-    case 0x60:
-        vp_x1 = p[0] & 0xFF; vp_y1 = (p[0] >> 8) & 0xFF; vp_x2 = (p[0] >> 16) & 0xFF; vp_y2 = (p[0] >> 24) & 0xFF;
-        break;
-    case 0x70: caja_dentro = 1; break;  // BOX_TEST: siempre "se ve"
-    case 0x71: {
-        Mat c;
-        clip(c);
-        float x = s16_12(p[0]), y = s16_12(p[0] >> 16), z = s16_12(p[1]);
-        vx = x; vy = y; vz = z;
-        for (int j = 0; j < 4; j++) pos_res[j] = x * c[j] + y * c[4 + j] + z * c[8 + j] + c[12 + j];
-        break;
+    else if (mode_mtx == 3)
+    {
+      sp_tex = 0;
+      memcpy(tex, stack_tex[0], sizeof(Mat));
     }
-    case 0x72: {
-        float n[3] = {s10(p[0], 0, 512), s10(p[0], 10, 512), s10(p[0], 20, 512)};
-        for (int j = 0; j < 3; j++) vec_res[j] = n[0] * vec[j] + n[1] * vec[4 + j] + n[2] * vec[8 + j];
-        break;
+    else
+    {
+      int n = (int)(p[0] & 63);
+      if (n & 32)
+        n -= 64;
+      sp_pos -= n;
+      if (sp_pos < 0)
+      {
+        sp_pos = 0;
+        error_stack = 1;
+      }
+      if (sp_pos > 31)
+      {
+        sp_pos = 31;
+        error_stack = 1;
+      }
+      memcpy(pos, stack_pos[sp_pos], sizeof(Mat));
+      memcpy(vec, stack_vec[sp_pos], sizeof(Mat));
     }
+    break;
+  }
+  case 0x13: // STORE
+    if (mode_mtx == 0)
+      memcpy(stack_proj[0], proj, sizeof(Mat));
+    else if (mode_mtx == 3)
+      memcpy(stack_tex[0], tex, sizeof(Mat));
+    else
+    {
+      int n = p[0] & 31;
+      if (n == 31)
+        error_stack = 1;
+      memcpy(stack_pos[n], pos, sizeof(Mat));
+      memcpy(stack_vec[n], vec, sizeof(Mat));
     }
+    break;
+  case 0x14: // RESTORE
+    if (mode_mtx == 0)
+      memcpy(proj, stack_proj[0], sizeof(Mat));
+    else if (mode_mtx == 3)
+      memcpy(tex, stack_tex[0], sizeof(Mat));
+    else
+    {
+      int n = p[0] & 31;
+      memcpy(pos, stack_pos[n], sizeof(Mat));
+      memcpy(vec, stack_vec[n], sizeof(Mat));
+    }
+    break;
+  case 0x15:
+    identity(m);
+    load(m);
+    break;
+  case 0x16:
+    for (int i = 0; i < 16; i++)
+      m[i] = f12(p[i]);
+    load(m);
+    break;
+  case 0x17:
+    identity(m);
+    for (int i = 0; i < 4; i++)
+      for (int j = 0; j < 3; j++)
+        m[i * 4 + j] = f12(p[i * 3 + j]);
+    load(m);
+    break;
+  case 0x18:
+    for (int i = 0; i < 16; i++)
+      m[i] = f12(p[i]);
+    apply(m, 1);
+    break;
+  case 0x19:
+    identity(m);
+    for (int i = 0; i < 4; i++)
+      for (int j = 0; j < 3; j++)
+        m[i * 4 + j] = f12(p[i * 3 + j]);
+    apply(m, 1);
+    break;
+  case 0x1A:
+    identity(m);
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++)
+        m[i * 4 + j] = f12(p[i * 3 + j]);
+    apply(m, 1);
+    break;
+  case 0x1B: // SCALE (does not affect the vector matrix)
+    identity(m);
+    m[0] = f12(p[0]);
+    m[5] = f12(p[1]);
+    m[10] = f12(p[2]);
+    apply(m, 0);
+    break;
+  case 0x1C:
+    identity(m);
+    m[12] = f12(p[0]);
+    m[13] = f12(p[1]);
+    m[14] = f12(p[2]);
+    apply(m, 1);
+    break;
+  case 0x20:
+    color15(p[0], &col_r, &col_g, &col_b);
+    break;
+  case 0x21:
+    normal(p[0]);
+    break;
+  case 0x22:
+  {
+    float s = (float)(int16_t)(p[0] & 0xFFFF) / 16.0f, t = (float)(int16_t)(p[0] >> 16) / 16.0f;
+    ts0 = s;
+    tt0 = t;
+    if (((teximage >> 30) & 3) == 1)
+    { // transformed by the texture matrix
+      ts = s * tex[0] + t * tex[4] + (tex[8] + tex[12]) / 16;
+      tt = s * tex[1] + t * tex[5] + (tex[9] + tex[13]) / 16;
+    }
+    else
+    {
+      ts = s;
+      tt = t;
+    }
+    break;
+  }
+  case 0x23:
+    vertex(s16_12(p[0]), s16_12(p[0] >> 16), s16_12(p[1]));
+    break;
+  case 0x24:
+    vertex(s10(p[0], 0, 64), s10(p[0], 10, 64), s10(p[0], 20, 64));
+    break;
+  case 0x25:
+    vertex(s16_12(p[0]), s16_12(p[0] >> 16), vz);
+    break;
+  case 0x26:
+    vertex(s16_12(p[0]), vy, s16_12(p[0] >> 16));
+    break;
+  case 0x27:
+    vertex(vx, s16_12(p[0]), s16_12(p[0] >> 16));
+    break;
+  case 0x28: // VTX_DIFF: 10 bit signed values added as they are in units of 4.12
+    vertex(vx + s10(p[0], 0, 4096), vy + s10(p[0], 10, 4096), vz + s10(p[0], 20, 4096));
+    break;
+  case 0x29:
+    attr_pending = p[0];
+    break;
+  case 0x2A:
+    teximage = p[0];
+    break;
+  case 0x2B:
+    pltt_base = p[0] & 0x1FFF;
+    if (pltt_base < d_pl_min)
+      d_pl_min = pltt_base;
+    if (pltt_base > d_pl_max)
+      d_pl_max = pltt_base;
+    break;
+  case 0x30:
+    dif_amb = p[0];
+    if (p[0] & 0x8000)
+      color15(p[0], &col_r, &col_g, &col_b);
+    break;
+  case 0x31:
+    spe_emi = p[0];
+    break;
+  case 0x32:
+  {
+    int l = (p[0] >> 30) & 3;
+    float L[3] = {s10(p[0], 0, 512), s10(p[0], 10, 512), s10(p[0], 20, 512)};
+    for (int j = 0; j < 3; j++)
+      light_dir[l][j] = L[0] * vec[j] + L[1] * vec[4 + j] + L[2] * vec[8 + j];
+    break;
+  }
+  case 0x33:
+  {
+    int l = (p[0] >> 30) & 3;
+    color15(p[0], &light_col[l][0], &light_col[l][1], &light_col[l][2]);
+    break;
+  }
+  case 0x34:
+    for (int i = 0; i < 32; i++)
+      memcpy(brightness_table + i * 4, &p[i], 4);
+    break;
+  case 0x40:
+    type_prim = p[0] & 3;
+    attr = attr_pending;
+    ntira = 0;
+    nvert_prim = 0;
+    odd = 0;
+    break;
+  case 0x41:
+    break;
+  case 0x50:
+    swap_pending = 1;
+    swap_param = p[0] & 3;
+    break;
+  case 0x60:
+    vp_x1 = p[0] & 0xFF;
+    vp_y1 = (p[0] >> 8) & 0xFF;
+    vp_x2 = (p[0] >> 16) & 0xFF;
+    vp_y2 = (p[0] >> 24) & 0xFF;
+    break;
+  case 0x70:
+    box_inside = 1;
+    break; // BOX_TEST: always "seen"
+  case 0x71:
+  {
+    Mat c;
+    clip(c);
+    float x = s16_12(p[0]), y = s16_12(p[0] >> 16), z = s16_12(p[1]);
+    vx = x;
+    vy = y;
+    vz = z;
+    for (int j = 0; j < 4; j++)
+      pos_res[j] = x * c[j] + y * c[4 + j] + z * c[8 + j] + c[12 + j];
+    break;
+  }
+  case 0x72:
+  {
+    float n[3] = {s10(p[0], 0, 512), s10(p[0], 10, 512), s10(p[0], 20, 512)};
+    for (int j = 0; j < 3; j++)
+      vec_res[j] = n[0] * vec[j] + n[1] * vec[4 + j] + n[2] * vec[8 + j];
+    break;
+  }
+  }
 }
 
-// FIFO: órdenes empaquetadas (4 órdenes por palabra, luego sus parámetros)
-static uint32_t fifo_cmds;     // órdenes pendientes de la palabra empaquetada
+// FIFO: packed commands (4 commands per word, then their parameters)
+static uint32_t fifo_cmds; // commands pending of the packed word
 static int fifo_ncmds;
 static uint32_t params[32];
-static int nparams, cmd_actual = -1;
+static int nparams, cmd_current = -1;
 
-static void siguiente_orden(void);
+static void next_command(void);
 
-static void empieza_orden(int cmd) {
-    cmd_actual = cmd;
+static void start_command(int cmd)
+{
+  cmd_current = cmd;
+  nparams = 0;
+  if (!command_valid[cmd] || n_param[cmd] == 0)
+  {
+    if (command_valid[cmd])
+      run(cmd, params);
+    cmd_current = -1;
+    next_command();
+  }
+}
+
+static void next_command(void)
+{
+  while (cmd_current < 0 && fifo_ncmds > 0)
+  {
+    int c = fifo_cmds & 0xFF;
+    fifo_cmds >>= 8;
+    fifo_ncmds--;
+    if (c == 0)
+      continue; // NOP
+    cmd_current = c;
     nparams = 0;
-    if (!orden_valida[cmd] || n_param[cmd] == 0) {
-        if (orden_valida[cmd]) ejecuta(cmd, params);
-        cmd_actual = -1;
-        siguiente_orden();
+    if (!command_valid[c] || n_param[c] == 0)
+    {
+      if (command_valid[c])
+        run(c, params);
+      cmd_current = -1;
     }
+  }
 }
 
-static void siguiente_orden(void) {
-    while (cmd_actual < 0 && fifo_ncmds > 0) {
-        int c = fifo_cmds & 0xFF;
-        fifo_cmds >>= 8;
-        fifo_ncmds--;
-        if (c == 0) continue;  // NOP
-        cmd_actual = c;
-        nparams = 0;
-        if (!orden_valida[c] || n_param[c] == 0) {
-            if (orden_valida[c]) ejecuta(c, params);
-            cmd_actual = -1;
-        }
-    }
+static void fifo_write(uint32_t v)
+{
+  if (cmd_current < 0)
+  {
+    if (v == 0)
+      return;
+    fifo_cmds = v;
+    fifo_ncmds = 4;
+    // removes the trailing NOPs
+    while (fifo_ncmds > 0 && ((fifo_cmds >> (8 * (fifo_ncmds - 1))) & 0xFF) == 0)
+      fifo_ncmds--;
+    next_command();
+    return;
+  }
+  params[nparams++] = v;
+  if (nparams >= n_param[cmd_current])
+  {
+    run(cmd_current, params);
+    cmd_current = -1;
+    next_command();
+  }
 }
 
-static void fifo_escribe(uint32_t v) {
-    if (cmd_actual < 0) {
-        if (v == 0) return;
-        fifo_cmds = v;
-        fifo_ncmds = 4;
-        // quita los NOP del final
-        while (fifo_ncmds > 0 && ((fifo_cmds >> (8 * (fifo_ncmds - 1))) & 0xFF) == 0) fifo_ncmds--;
-        siguiente_orden();
-        return;
-    }
-    params[nparams++] = v;
-    if (nparams >= n_param[cmd_actual]) {
-        ejecuta(cmd_actual, params);
-        cmd_actual = -1;
-        siguiente_orden();
-    }
+static uint32_t port_params[32];
+static int port_n, port_cmd = -1;
+
+void gx_write(uint32_t a, uint32_t v)
+{
+  if (a < 0x04000440)
+  {
+    fifo_write(v);
+    return;
+  }
+  if (a >= 0x04000600)
+    return;
+  int cmd = (int)((a - 0x04000400) >> 2);
+  if (!command_valid[cmd])
+    return;
+  if (n_param[cmd] == 0)
+  {
+    run(cmd, port_params);
+    return;
+  }
+  if (port_cmd != cmd)
+  {
+    port_cmd = cmd;
+    port_n = 0;
+  }
+  port_params[port_n++] = v;
+  if (port_n >= n_param[cmd])
+  {
+    run(cmd, port_params);
+    port_n = 0;
+    port_cmd = -1;
+  }
 }
 
-static uint32_t puerto_params[32];
-static int puerto_n, puerto_cmd = -1;
-
-void gx_escribe(uint32_t a, uint32_t v) {
-    if (a < 0x04000440) { fifo_escribe(v); return; }
-    if (a >= 0x04000600) return;
-    int cmd = (int)((a - 0x04000400) >> 2);
-    if (!orden_valida[cmd]) return;
-    if (n_param[cmd] == 0) { ejecuta(cmd, puerto_params); return; }
-    if (puerto_cmd != cmd) { puerto_cmd = cmd; puerto_n = 0; }
-    puerto_params[puerto_n++] = v;
-    if (puerto_n >= n_param[cmd]) {
-        ejecuta(cmd, puerto_params);
-        puerto_n = 0;
-        puerto_cmd = -1;
-    }
+uint32_t gx_read(uint32_t a)
+{
+  Mat c;
+  switch (a & ~3u)
+  {
+  case 0x04000600: // GXSTAT: FIFO empty, nothing busy
+    return (uint32_t)box_inside << 1 | (uint32_t)(sp_pos & 31) << 8 | (uint32_t)sp_proj << 13 |
+           (uint32_t)error_stack << 15 | 0x06000000;
+  case 0x04000604:
+    return (uint32_t)nvisible[list] | (uint32_t)(nvisible[list] * 3) << 16;
+  case 0x04000620:
+  case 0x04000624:
+  case 0x04000628:
+  case 0x0400062C:
+    return (uint32_t)(int32_t)(pos_res[(a - 0x04000620) / 4] * 4096);
+  case 0x04000630:
+  case 0x04000634:
+    return (uint32_t)((int32_t)(vec_res[(a - 0x04000630) / 2] * 4096) & 0xFFFF) |
+           (uint32_t)((int32_t)(vec_res[(a - 0x04000630) / 2 + 1] * 4096) << 16);
+  }
+  if (a >= 0x04000640 && a < 0x04000680)
+  {
+    clip(c);
+    return (uint32_t)(int32_t)(c[(a - 0x04000640) / 4] * 4096);
+  }
+  if (a >= 0x04000680 && a < 0x040006A4)
+  {
+    int i = (int)(a - 0x04000680) / 4;
+    return (uint32_t)(int32_t)(vec[(i / 3) * 4 + i % 3] * 4096);
+  }
+  return 0;
 }
 
-uint32_t gx_lee(uint32_t a) {
-    Mat c;
-    switch (a & ~3u) {
-    case 0x04000600:  // GXSTAT: FIFO vacía, nada ocupado
-        return (uint32_t)caja_dentro << 1 | (uint32_t)(sp_pos & 31) << 8 | (uint32_t)sp_proj << 13 |
-               (uint32_t)error_pila << 15 | 0x06000000;
-    case 0x04000604: return (uint32_t)nvisibles[lista] | (uint32_t)(nvisibles[lista] * 3) << 16;
-    case 0x04000620: case 0x04000624: case 0x04000628: case 0x0400062C:
-        return (uint32_t)(int32_t)(pos_res[(a - 0x04000620) / 4] * 4096);
-    case 0x04000630: case 0x04000634:
-        return (uint32_t)((int32_t)(vec_res[(a - 0x04000630) / 2] * 4096) & 0xFFFF) |
-               (uint32_t)((int32_t)(vec_res[(a - 0x04000630) / 2 + 1] * 4096) << 16);
-    }
-    if (a >= 0x04000640 && a < 0x04000680) {
-        clip(c);
-        return (uint32_t)(int32_t)(c[(a - 0x04000640) / 4] * 4096);
-    }
-    if (a >= 0x04000680 && a < 0x040006A4) {
-        int i = (int)(a - 0x04000680) / 4;
-        return (uint32_t)(int32_t)(vec[(i / 3) * 4 + i % 3] * 4096);
-    }
-    return 0;
+void gx_init(void)
+{
+  identity(proj);
+  identity(pos);
+  identity(vec);
+  identity(tex);
 }
 
-void gx_inicia(void) {
-    identidad(proj); identidad(pos); identidad(vec); identidad(tex);
-}
-
-// ---- rasterizador ------------------------------------------------------------------
-//
-// Rápido y en paralelo:
-//   - Cada triángulo se prepara una vez (ecuaciones de sus bordes y de sus
-//     atributos) y se recorre sumando incrementos, fila a fila, solo dentro.
-//   - La pantalla se reparte en NBANDAS bandas de filas, cada una en su hilo:
-//     cada banda pinta todos los polígonos en orden, así que el resultado es
-//     igual que pintando de uno en uno.
-//   - Todo ocurre en un hilo aparte mientras el juego prepara la escena
-//     siguiente. Si el juego termina otra escena antes de que acabe la
-//     anterior, esa se salta (mejor perder un fotograma que frenar el juego).
+// Fast and in parallel:
+//- Each triangle is prepared once (equations of its edges and of its
+// attributes) and walked adding increments, row by row, only inside.
+//- The screen is split into NBANDAS bands of rows, each in its thread:
+// each band paints all the polygons in order, so the result is
+// the same as painting one by one.
+//- Everything happens in a separate thread while the game prepares the next
+// scene. If the game finishes another scene before the previous one
+// ends, that one is skipped (better to lose a frame than slow the game).
 #include "compat.h"
 
-static inline uint8_t tex8(uint32_t o) {
-    uint8_t *p = g_tex[(o >> 17) & 3];
-    return p ? p[o & 0x1FFFF] : 0;
+static inline uint8_t tex8(uint32_t o)
+{
+  uint8_t* p = snap_tex[(o >> 17) & 3];
+  if (!p)
+    return 0;
+  return p[o & 0x1FFFF];
 }
-static inline uint16_t pal16(uint32_t o) {
-    o %= 0x18000;  // 96 KB (6 slots de 16 KB); ojo: 0x17FFF NO sirve de máscara (borra el bit 15)
-    uint8_t *p = g_texpal[o >> 14];
-    return p ? (uint16_t)(p[o & 0x3FFF] | p[(o & 0x3FFF) + 1] << 8) : 0;
-}
-
-static inline uint16_t media15(uint16_t c0, uint16_t c1, int p0, int p1, int div) {
-    return (uint16_t)((((c0 & 31) * p0 + (c1 & 31) * p1) / div) |
-                      ((((c0 >> 5) & 31) * p0 + ((c1 >> 5) & 31) * p1) / div) << 5 |
-                      ((((c0 >> 10) & 31) * p0 + ((c1 >> 10) & 31) * p1) / div) << 10);
-}
-
-// Color de un texel (RGB555) y su alfa 0..31
-static uint16_t texel(uint32_t ti, uint32_t pltt, int s, int t, int *alfa) {
-    int w = 8 << ((ti >> 20) & 7), h = 8 << ((ti >> 23) & 7);
-    if ((ti >> 16) & 1) {  // repetir S
-        if ((ti >> 18) & 1) { int per = s & (2 * w - 1); s = per >= w ? 2 * w - 1 - per : per; }
-        else s &= w - 1;
-    } else s = s < 0 ? 0 : s >= w ? w - 1 : s;
-    if ((ti >> 17) & 1) {
-        if ((ti >> 19) & 1) { int per = t & (2 * h - 1); t = per >= h ? 2 * h - 1 - per : per; }
-        else t &= h - 1;
-    } else t = t < 0 ? 0 : t >= h ? h - 1 : t;
-    uint32_t base = (ti & 0xFFFF) * 8;
-    int fmt = (ti >> 26) & 7;
-    int trans0 = (ti >> 29) & 1;
-    uint32_t pb = pltt * 16, i;
-    *alfa = 31;
-    switch (fmt) {
-    case 1: {  // A3I5
-        uint8_t b = tex8(base + (uint32_t)(t * w + s));
-        int a = b >> 5;
-        *alfa = a * 4 + a / 2;
-        return pal16(pb + (b & 31) * 2);
-    }
-    case 2:  // 4 colores
-        i = (tex8(base + (uint32_t)((t * w + s) / 4)) >> ((s & 3) * 2)) & 3;
-        if (trans0 && i == 0) *alfa = 0;
-        return pal16(pltt * 8 + i * 2);
-    case 3:  // 16 colores
-        i = (tex8(base + (uint32_t)((t * w + s) / 2)) >> ((s & 1) * 4)) & 15;
-        if (trans0 && i == 0) *alfa = 0;
-        return pal16(pb + i * 2);
-    case 4:  // 256 colores
-        i = tex8(base + (uint32_t)(t * w + s));
-        if (trans0 && i == 0) *alfa = 0;
-        return pal16(pb + i * 2);
-    case 5: {  // comprimido en bloques de 4x4
-        uint32_t datos = base + (uint32_t)((t / 4) * (w / 4) + s / 4) * 4;
-        int idx = (tex8(datos + (uint32_t)(t & 3)) >> ((s & 3) * 2)) & 3;
-        uint32_t slot = (datos & 0x7FFFF) >= 0x40000 ? 0x10000 : 0;  // datos en el slot 2: índices en slot 1 + 64 KB
-        uint32_t info_dir = 0x20000 + slot + ((datos & 0x1FFFF) >> 1);
-        uint16_t info = (uint16_t)(tex8(info_dir) | tex8(info_dir + 1) << 8);
-        uint32_t pdir = pb + (uint32_t)(info & 0x3FFF) * 4;
-        int modo = info >> 14;
-        switch (idx) {
-        case 0: return pal16(pdir);
-        case 1: return pal16(pdir + 2);
-        case 2:
-            if (modo == 0 || modo == 2) return pal16(pdir + 4);
-            if (modo == 1) return media15(pal16(pdir), pal16(pdir + 2), 1, 1, 2);
-            return media15(pal16(pdir), pal16(pdir + 2), 5, 3, 8);
-        default:
-            if (modo == 2) return pal16(pdir + 6);
-            if (modo == 3) return media15(pal16(pdir), pal16(pdir + 2), 3, 5, 8);
-            *alfa = 0;
-            return 0;
-        }
-    }
-    case 6: {  // A5I3
-        uint8_t b = tex8(base + (uint32_t)(t * w + s));
-        *alfa = b >> 3;
-        return pal16(pb + (b & 7) * 2);
-    }
-    case 7: {  // color directo
-        uint32_t o = base + (uint32_t)(t * w + s) * 2;
-        uint16_t c = (uint16_t)(tex8(o) | tex8(o + 1) << 8);
-        if (!(c & 0x8000)) *alfa = 0;
-        return c & 0x7FFF;
-    }
-    }
-    return 0x7FFF;
+static inline uint16_t pal16(uint32_t o)
+{
+  o %= 0x18000; // 96 KB (6 slots of 16 KB). Careful: 0x17FFF does NOT work as a mask (it clears bit
+                // 15)
+  uint8_t* p = snap_pal[o >> 14];
+  if (!p)
+    return 0;
+  return (uint16_t)(p[o & 0x3FFF] | p[(o & 0x3FFF) + 1] << 8);
 }
 
-// ---- texturas para el 3D por la GPU (gpu3d_gl.c) --------------------------------------------------------------
-// Huella de lo que usa una textura en la VRAM (sus texels, y en las comprimidas sus índices) y su paleta: si no
-// cambia, la textura ya subida a la GPU sigue valiendo.
-uint64_t gx_tex_huella(uint32_t ti, uint32_t pltt) {
-    static const int bits[8] = {0, 8, 2, 4, 8, 2, 8, 16};
-    int w = 8 << ((ti >> 20) & 7), h = 8 << ((ti >> 23) & 7), fmt = (ti >> 26) & 7;
-    uint32_t base = (ti & 0xFFFF) * 8, n = (uint32_t)(w * h * bits[fmt] / 8);
-    uint64_t x = 1469598103934665603ull;
-#define MEZCLA(b) (x = (x ^ (uint8_t)(b)) * 1099511628211ull)
-    for (uint32_t i = 0; i < n; i++) MEZCLA(tex8(base + i));
-    uint32_t pb = pltt * 16, np = 0;
-    switch (fmt) {
-    case 1: np = 64; break;
-    case 2: pb = pltt * 8; np = 8; break;
-    case 3: np = 32; break;
-    case 4: np = 512; break;
-    case 6: np = 16; break;
-    case 5: {  // los índices (2 bytes por bloque de 4x4) y la paleta hasta la entrada más alta que usen
-        uint32_t slot = (base & 0x7FFFF) >= 0x40000 ? 0x10000 : 0;
-        uint32_t info = 0x20000 + slot + ((base & 0x1FFFF) >> 1), mayor = 0;
-        for (uint32_t i = 0; i < n / 2; i += 2) {
-            uint16_t v = (uint16_t)(tex8(info + i) | tex8(info + i + 1) << 8);
-            MEZCLA(v); MEZCLA(v >> 8);
-            if ((uint32_t)(v & 0x3FFF) * 4 > mayor) mayor = (uint32_t)(v & 0x3FFF) * 4;
-        }
-        np = mayor + 8;
-        break;
-    }
-    }
-    for (uint32_t i = 0; i < np; i += 2) { uint16_t c = pal16(pb + i); MEZCLA(c); MEZCLA(c >> 8); }
-#undef MEZCLA
-    return x;
+static inline uint16_t media15(uint16_t c0, uint16_t c1, int p0, int p1, int div)
+{
+  return (uint16_t)((((c0 & 31) * p0 + (c1 & 31) * p1) / div) |
+                    ((((c0 >> 5) & 31) * p0 + ((c1 >> 5) & 31) * p1) / div) << 5 |
+                    ((((c0 >> 10) & 31) * p0 + ((c1 >> 10) & 31) * p1) / div) << 10);
 }
 
-// La textura entera en RGBA8 (cada componente de 5 bits pasado a 8; alfa 0..31 también)
-void gx_tex_decodifica(uint32_t ti, uint32_t pltt, uint8_t *rgba) {
-    int w = 8 << ((ti >> 20) & 7), h = 8 << ((ti >> 23) & 7);
-    for (int t = 0; t < h; t++)
-        for (int s = 0; s < w; s++, rgba += 4) {
-            int a;
-            uint16_t c = texel(ti, pltt, s, t, &a);
-            rgba[0] = (uint8_t)((c & 31) * 255 / 31);
-            rgba[1] = (uint8_t)(((c >> 5) & 31) * 255 / 31);
-            rgba[2] = (uint8_t)(((c >> 10) & 31) * 255 / 31);
-            rgba[3] = (uint8_t)(a * 255 / 31);
-        }
+// Color of a texel (RGB555) and its alpha 0..31
+static uint16_t texel(uint32_t ti, uint32_t pltt, int s, int t, int* alpha)
+{
+  int w = 8 << ((ti >> 20) & 7), h = 8 << ((ti >> 23) & 7);
+  if ((ti >> 16) & 1)
+  { // repetir S
+    if ((ti >> 18) & 1)
+    {
+      int per = s & (2 * w - 1);
+      s = per >= w ? 2 * w - 1 - per : per;
+    }
+    else
+      s &= w - 1;
+  }
+  else
+    s = s < 0 ? 0 : s >= w ? w - 1 : s;
+  if ((ti >> 17) & 1)
+  {
+    if ((ti >> 19) & 1)
+    {
+      int per = t & (2 * h - 1);
+      t = per >= h ? 2 * h - 1 - per : per;
+    }
+    else
+      t &= h - 1;
+  }
+  else
+    t = t < 0 ? 0 : t >= h ? h - 1 : t;
+  uint32_t base = (ti & 0xFFFF) * 8;
+  int fmt = (ti >> 26) & 7;
+  int trans0 = (ti >> 29) & 1;
+  uint32_t pb = pltt * 16, i;
+  *alpha = 31;
+  switch (fmt)
+  {
+  case 1:
+  { // A3I5
+    uint8_t b = tex8(base + (uint32_t)(t * w + s));
+    int a = b >> 5;
+    *alpha = a * 4 + a / 2;
+    return pal16(pb + (b & 31) * 2);
+  }
+  case 2: // 4 colores
+    i = (tex8(base + (uint32_t)((t * w + s) / 4)) >> ((s & 3) * 2)) & 3;
+    if (trans0 && i == 0)
+      *alpha = 0;
+    return pal16(pltt * 8 + i * 2);
+  case 3: // 16 colores
+    i = (tex8(base + (uint32_t)((t * w + s) / 2)) >> ((s & 1) * 4)) & 15;
+    if (trans0 && i == 0)
+      *alpha = 0;
+    return pal16(pb + i * 2);
+  case 4: // 256 colores
+    i = tex8(base + (uint32_t)(t * w + s));
+    if (trans0 && i == 0)
+      *alpha = 0;
+    return pal16(pb + i * 2);
+  case 5:
+  { // compressed in 4x4 blocks
+    uint32_t raw_data = base + (uint32_t)((t / 4) * (w / 4) + s / 4) * 4;
+    int idx = (tex8(raw_data + (uint32_t)(t & 3)) >> ((s & 3) * 2)) & 3;
+    uint32_t slot =
+        (raw_data & 0x7FFFF) >= 0x40000 ? 0x10000 : 0; // data in slot 2: indices in slot 1 + 64 KB
+    uint32_t info_dir = 0x20000 + slot + ((raw_data & 0x1FFFF) >> 1);
+    uint16_t info = (uint16_t)(tex8(info_dir) | tex8(info_dir + 1) << 8);
+    uint32_t pdir = pb + (uint32_t)(info & 0x3FFF) * 4;
+    int mode = info >> 14;
+    switch (idx)
+    {
+    case 0:
+      return pal16(pdir);
+    case 1:
+      return pal16(pdir + 2);
+    case 2:
+      if (mode == 0 || mode == 2)
+        return pal16(pdir + 4);
+      if (mode == 1)
+        return media15(pal16(pdir), pal16(pdir + 2), 1, 1, 2);
+      return media15(pal16(pdir), pal16(pdir + 2), 5, 3, 8);
+    default:
+      if (mode == 2)
+        return pal16(pdir + 6);
+      if (mode == 3)
+        return media15(pal16(pdir), pal16(pdir + 2), 3, 5, 8);
+      *alpha = 0;
+      return 0;
+    }
+  }
+  case 6:
+  { // A5I3
+    uint8_t b = tex8(base + (uint32_t)(t * w + s));
+    *alpha = b >> 3;
+    return pal16(pb + (b & 7) * 2);
+  }
+  case 7:
+  { // color directo
+    uint32_t o = base + (uint32_t)(t * w + s) * 2;
+    uint16_t c = (uint16_t)(tex8(o) | tex8(o + 1) << 8);
+    if (!(c & 0x8000))
+      *alpha = 0;
+    return c & 0x7FFF;
+  }
+  }
+  return 0x7FFF;
 }
 
-typedef struct { float x, y, z, iw, r, g, b, s, t; } VP;  // vértice en pantalla (atributos / w)
+// texture cache: every texel is decoded by texel() at most once per scene, then read back by every
+// pixel, band and in-between image of that scene. one 32 bit word per texel: epoch(12) alpha(5)
+// color(15), so a band thread writes it in one store and a stale entry (old epoch) just gets
+// decoded again. nothing is kept between scenes, so a texture the game rewrites is picked up
+// exactly as before
+typedef struct
+{
+  uint32_t ti, pltt;
+  int w, h;
+  uint32_t* px;
+} TexC;
+#define MAX_TEXC 512
+#define MAX_TEXC_BYTES (96u * 1024 * 1024)
+static TexC texc[MAX_TEXC];
+static int ntexc;
+static size_t texc_bytes;
+static volatile uint32_t epoch = 1; // 1..4095, 0 is the empty (never decoded) value
 
-typedef struct {  // polígono listo para pintar
-    VP v[MAX_VERT_POLI];
-    int n;
-    uint32_t teximage, pltt;
-    uint8_t modo, alfa, id, texturas, prof_igual, act_prof_trasl, translucido, niebla;
+static void texc_empty(void)
+{
+  for (int i = 0; i < ntexc; i++)
+    free(texc[i].px);
+  ntexc = 0;
+  texc_bytes = 0;
+}
+
+// start of a real scene (sub-frames share it): new epoch, and a flush when the counter wraps or
+// memory is high
+static void texc_scene(void)
+{
+  epoch = epoch % 4095 + 1;
+  if (epoch == 1 || texc_bytes > MAX_TEXC_BYTES / 2)
+    texc_empty();
+}
+
+// cache slot of a texture, NULL when there is no room (the pixel then uses texel() directly)
+static TexC* texc_search(uint32_t ti, uint32_t pltt)
+{
+  static int last;
+  if (last < ntexc && texc[last].ti == ti && texc[last].pltt == pltt)
+    return &texc[last];
+  for (int i = 0; i < ntexc; i++)
+    if (texc[i].ti == ti && texc[i].pltt == pltt)
+    {
+      last = i;
+      return &texc[i];
+    }
+  int w = 8 << ((ti >> 20) & 7), h = 8 << ((ti >> 23) & 7);
+  size_t bytes = (size_t)w * h * 4;
+  if (ntexc >= MAX_TEXC || texc_bytes + bytes > MAX_TEXC_BYTES)
+    return NULL;
+  uint32_t* px = calloc((size_t)w * h, 4);
+  if (!px)
+    return NULL;
+  texc[ntexc] = (TexC){ti, pltt, w, h, px};
+  texc_bytes += bytes;
+  last = ntexc;
+  return &texc[ntexc++];
+}
+
+typedef struct
+{
+  float x, y, z, iw, r, g, b, s, t;
+} VP; // vertex on screen (attributes / w)
+
+typedef struct
+{ // polygon ready to paint
+  VP v[MAX_VERT_POLY];
+  int n;
+  uint32_t teximage, pltt;
+  uint8_t mode, alpha, id, textures, depth_same, act_depth_trans, translucent;
+  TexC* tc; // texture cache slot, NULL = decode with texel() per pixel
 } PP;
 
-typedef struct {  // lo que necesita el hilo de pintar (copiado al empezar la escena)
-    uint8_t io[0x400];
-    int wbuf, vp_x1, vp_y1, vp_x2, vp_y2, lst;
-    int interp;  // se pueden hacer imágenes intermedias con la escena anterior
-    int doble;   // 3D en las dos pantallas (captura alternando): cada vista viene cada dos fotogramas
-    int pantalla;  // el bit de POWCNT1 de esta escena: qué motor la pintó
-    int vista;   // cuál de las dos es (con la suya se empareja); si no, 0
-} Trabajo;
+typedef struct
+{ // what the painting thread needs (copied at the start of the scene)
+  uint8_t io[0x400];
+  int wbuf, vp_x1, vp_y1, vp_x2, vp_y2, lst;
+} Job;
 
-static PP pp[MAX_POLIS];
+static PP pp[MAX_POLYS];
 static int npp;
-static Trabajo trabajo;
+static Job job;
 
-// Reescalado: el 3D se pinta a esc veces la resolución de la DS (MKDS_ESCALA, 1-4). salida_* es a tamaño de
-// la DS (para el 2D, la captura y las repeticiones); salida_hd_* a tamaño grande (para la ventana).
+// Rescale: the 3D is painted at esc times the DS resolution (DRIFT_SCALE, 1-4). output_* is at DS
+// size (for the 2D, the capture and the replays). output_hd_* is at big size (for the window).
 #define MAXP (1024 * 768)
-static int esc = 1, AN = 256, AL = 192;
-static uint16_t color_buf[MAXP];   // RGB555
-static uint8_t alfa_buf[MAXP];     // 0..31 (0 = nada)
-static uint32_t prof_buf[MAXP];
+static int esc = 1, AN = 256, AT = 192;
+static uint16_t color_buf[MAXP]; // RGB555
+static uint8_t alpha_buf[MAXP]; // 0..31 (0 = nada)
+static uint32_t depth_buf[MAXP];
 static uint8_t id_buf[MAXP];
-// Sombras (las de los karts son volúmenes). Polígonos de modo 3, en dos partes:
-//  - la máscara (ID 0, caras de atrás): no pinta, marca los puntos donde falla la profundidad, es decir, donde el fondo
-//    del volumen queda por debajo de lo ya pintado;
-//  - la sombra (ID distinto de 0, caras de delante): se pinta solo en lo marcado y si el punto no tiene su mismo ID.
-// La marca se borra al empezar cada máscara nueva.
-static uint8_t sombra_buf[MAXP];
-// Lo pintado: un anillo de 3 juegos. El hilo de pintar escribe el siguiente al actual; el montaje de la
-// imagen (otro hilo) usa el que le toca durante un fotograma sin que se lo pisen.
-typedef struct {
-    uint16_t color[256 * 192];      // a tamaño de la DS
-    uint8_t alfa[256 * 192];
-    uint16_t hd_color[MAXP];        // a tamaño grande (reescalado)
-    uint8_t hd_alfa[MAXP];
-    uint16_t sub_color[7][MAXP];    // imágenes intermedias entre la escena anterior y esta (a tamaño 'esc')
-    uint8_t sub_alfa[7][MAXP];
-    int nsub;
-    int pantalla;                   // ver Trabajo
-    int doble;                      // de una presentación con 3D en las dos pantallas: del fotograma de antes del anterior
-} Salida;
-#define NSAL 4
-static Salida salidas[NSAL];
-static volatile int salida_actual, polis_ultima;
-static volatile uint64_t cont_frames, cont_saltadas;
-volatile double g_render_ms_suma, g_render_ms_max;
-volatile int g_render_n, g_render_sub;
+// What was painted: a ring of 3 sets. The painting thread writes the one after the current. The
+// image build (another thread) uses the one it gets for a frame, without it being overwritten.
+typedef struct
+{
+  uint16_t color[256 * 192]; // at DS size
+  uint8_t alpha[256 * 192];
+  uint16_t hd_color[MAXP]; // at big size (rescale)
+  uint8_t hd_alpha[MAXP];
+} Output;
+static Output outputs[3];
+static volatile int output_current, polys_last;
+static volatile uint64_t cont_frames, cont_skipped;
 
-// Niebla (DISP3DCNT bit 7, polígonos con el bit 15 de POLYGON_ATTR): cuanto más lejos, más se mezcla el color con
-// FOG_COLOR, según FOG_TABLE (32 densidades de 0 a 127 repartidas desde FOG_OFFSET). En la DS se hace al final con la
-// profundidad de cada punto; aquí, punto a punto al pintar cada polígono, igual que en la GPU. En MKDS solo la
-// encienden cinco circuitos (NOTAS.md).
-static int nb_t[34], nb_r, nb_g, nb_b, nb_sh, hay_niebla;
-static uint32_t nb_off;
+// Turns the polygons of the list into screen coordinates and drops those not seen
 
-static void niebla_prepara(const uint8_t *io) {
-    uint16_t disp3d = (uint16_t)(io[0x60] | io[0x61] << 8);
-    hay_niebla = (disp3d & 0xC0) == 0x80;  // (con el bit 6 cambia solo el alfa: en MKDS no se usa)
-    if (!hay_niebla) return;
-    uint16_t c = (uint16_t)(io[0x358] | io[0x359] << 8);
-    nb_r = (c & 31) * 2; nb_g = ((c >> 5) & 31) * 2; nb_b = ((c >> 10) & 31) * 2;
-    nb_off = (uint32_t)((io[0x35C] | io[0x35D] << 8) & 0x7FFF) * 0x200;
-    nb_sh = (disp3d >> 8) & 15;
-    for (int i = 0; i < 32; i++) nb_t[i + 1] = io[0x360 + i] & 0x7F;
-    nb_t[0] = nb_t[1];
-    nb_t[33] = nb_t[32];
-}
-
-static int densidad(uint32_t z) {
-    uint32_t id = 0, fr = 0;
-    if (z >= nb_off) {
-        uint64_t q = (uint64_t)((z - nb_off) >> 2) << nb_sh;
-        if (q >> 22) id = 32;  // (id >= 32: al final de la tabla)
-        else { id = (uint32_t)(q >> 17); fr = (uint32_t)q & 0x1FFFF; }
+static void prepare(const Job* tj, const Poly* lst, int n)
+{
+  uint16_t disp3d = (uint16_t)(tj->io[0x60] | tj->io[0x61] << 8);
+  float vw = (float)(tj->vp_x2 - tj->vp_x1 + 1), vh = (float)(tj->vp_y2 - tj->vp_y1 + 1);
+  npp = 0;
+  for (int k = 0; k < n; k++)
+  {
+    const Poly* p = &lst[k];
+    if (p->n < 3)
+      continue; // outside the view
+    int alpha = (p->attr >> 16) & 31, mode = (p->attr >> 4) & 3;
+    if (alpha == 0 || mode == 3)
+      continue; // wireframe and shadows: not painted for now
+    PP* q = &pp[npp];
+    float area = 0;
+    for (int i = 0; i < p->n; i++)
+    {
+      const Vert* a = &p->v[i];
+      float w = a->w == 0 ? 1e-6f : a->w, iw = 1.0f / w;
+      VP* v = &q->v[i];
+      v->x = ((a->x * iw + 1) * vw / 2 + (float)tj->vp_x1) * (float)esc;
+      v->y = ((1 - a->y * iw) * vh / 2 + (float)(191 - tj->vp_y2)) * (float)esc;
+      // DRIFT_SNAP=1: round screen positions to whole pixels of the drawing grid, as the DS does
+      // (its rasterizer has no sub-pixel positions), so textures do not slide by tiny amounts while
+      // a model moves
+      v->z = tj->wbuf ? w : (a->z * iw + 1) / 2;
+      v->iw = iw;
+      v->r = a->r * iw;
+      v->g = a->g * iw;
+      v->b = a->b * iw;
+      v->s = a->s * iw;
+      v->t = a->t * iw;
     }
-    int d = (int)(((uint64_t)nb_t[id] * (0x20000 - fr) + (uint64_t)nb_t[id + 1] * fr) >> 17);
-    return d >= 127 ? 128 : d;
-}
-
-// El fondo (CLEAR_COLOR, con su bit 15 de niebla), para la CPU y la GPU
-uint16_t gx_fondo_con_niebla(uint32_t clear, uint32_t z) {
-    uint16_t c = clear & 0x7FFF;
-    if (!hay_niebla || !((clear >> 15) & 1)) return c;
-    int d = densidad(z), r = c & 31, g = (c >> 5) & 31, b = (c >> 10) & 31;
-    r = (nb_r / 2 * d + r * (128 - d)) >> 7;
-    g = (nb_g / 2 * d + g * (128 - d)) >> 7;
-    b = (nb_b / 2 * d + b * (128 - d)) >> 7;
-    return (uint16_t)(r | g << 5 | b << 10);
-}
-
-// Pasa los polígonos de la lista a coordenadas de pantalla y descarta los que no se ven
-static void prepara(const Trabajo *tj, const Poli *lst, int n) {
-    uint16_t disp3d = (uint16_t)(tj->io[0x60] | tj->io[0x61] << 8);
-    niebla_prepara(tj->io);
-    float vw = (float)(tj->vp_x2 - tj->vp_x1 + 1), vh = (float)(tj->vp_y2 - tj->vp_y1 + 1);
-    npp = 0;
-    for (int k = 0; k < n; k++) {
-        const Poli *p = &lst[k];
-        if (p->n < 3) continue;  // fuera de la vista
-        int alfa = (p->attr >> 16) & 31, modo = (p->attr >> 4) & 3;
-        int mascara = modo == 3 && ((p->attr >> 24) & 63) == 0;  // la máscara de una sombra: ni color ni textura
-        if (alfa == 0 && !mascara) continue;  // alambre: de momento no se pinta
-        PP *q = &pp[npp];
-        float area = 0;
-        for (int i = 0; i < p->n; i++) {
-            const Vert *a = &p->v[i];
-            float w = a->w == 0 ? 1e-6f : a->w, iw = 1.0f / w;
-            VP *v = &q->v[i];
-            v->x = ((a->x * iw + 1) * vw / 2 + (float)tj->vp_x1) * (float)esc;
-            v->y = ((1 - a->y * iw) * vh / 2 + (float)(191 - tj->vp_y2)) * (float)esc;
-            v->z = tj->wbuf ? w : (a->z * iw + 1) / 2;
-            v->iw = iw;
-            v->r = a->r * iw; v->g = a->g * iw; v->b = a->b * iw;
-            v->s = a->s * iw; v->t = a->t * iw;
-        }
-        for (int i = 0; i < p->n; i++) {
-            const VP *a = &q->v[i], *b = &q->v[(i + 1) % p->n];
-            area += a->x * b->y - b->x * a->y;
-        }
-        int delante = area < 0;
-        if (delante && !((p->attr >> 7) & 1)) continue;
-        if (!delante && !((p->attr >> 6) & 1)) continue;
-        int fmt = (p->teximage >> 26) & 7;
-        q->n = p->n;
-        q->teximage = p->teximage;
-        q->pltt = p->pltt;
-        q->modo = (uint8_t)modo;
-        q->alfa = (uint8_t)(mascara ? 31 : alfa);
-        q->id = (uint8_t)((p->attr >> 24) & 63);
-        q->texturas = (disp3d & 1) && fmt != 0 && !mascara;
-        q->prof_igual = (p->attr >> 14) & 1;
-        q->act_prof_trasl = (p->attr >> 11) & 1;
-        q->translucido = (uint8_t)p->translucido;
-        q->niebla = hay_niebla && ((p->attr >> 15) & 1);
-        npp++;
+    for (int i = 0; i < p->n; i++)
+    {
+      const VP *a = &q->v[i], *b = &q->v[(i + 1) % p->n];
+      area += a->x * b->y - b->x * a->y;
     }
+    int front = area < 0;
+    if (front && !((p->attr >> 7) & 1))
+      continue;
+    if (!front && !((p->attr >> 6) & 1))
+      continue;
+    int fmt = (p->teximage >> 26) & 7;
+    q->n = p->n;
+    q->teximage = p->teximage;
+    q->pltt = p->pltt;
+    q->mode = (uint8_t)mode;
+    q->alpha = (uint8_t)alpha;
+    q->id = (uint8_t)((p->attr >> 24) & 63);
+    q->textures = (disp3d & 1) && fmt != 0;
+    q->tc = q->textures ? texc_search(p->teximage, p->pltt) : NULL;
+    q->depth_same = (p->attr >> 14) & 1;
+    q->act_depth_trans = (p->attr >> 11) & 1;
+    q->translucent = (uint8_t)p->translucent;
+    npp++;
+  }
 }
 
-static void triangulo(const PP *p, const VP *A, const VP *B, const VP *C, int yb0, int yb1, const Trabajo *tj,
-                      int capa_trasl) {
-    float d = (B->x - A->x) * (C->y - A->y) - (C->x - A->x) * (B->y - A->y);
-    if (fabsf(d) < 1e-6f) return;
-    float id = 1.0f / d;
-    int y0 = (int)floorf(fminf(A->y, fminf(B->y, C->y))), y1 = (int)ceilf(fmaxf(A->y, fmaxf(B->y, C->y)));
-    int xa = (int)floorf(fminf(A->x, fminf(B->x, C->x))), xb = (int)ceilf(fmaxf(A->x, fmaxf(B->x, C->x)));
-    if (y0 < yb0) y0 = yb0;
-    if (y1 > yb1) y1 = yb1;
-    if (xa < 0) xa = 0;
-    if (xb > AN - 1) xb = AN - 1;
-    if (y0 > y1 || xa > xb) return;
-    // pesos baricéntricos de A y B como funciones lineales: l = (k + kx*px + ky*py) / d
-    float k0 = B->x * C->y - C->x * B->y, k0x = B->y - C->y, k0y = C->x - B->x;
-    float k1 = C->x * A->y - A->x * C->y, k1x = C->y - A->y, k1y = A->x - C->x;
-    float l0x = k0x * id, l1x = k1x * id;
-    // atributo = aC + l0*(aA - aC) + l1*(aB - aC)
-#define DIF(c) float c##A = A->c - C->c, c##B = B->c - C->c, c##C = C->c
-    DIF(z); DIF(iw); DIF(r); DIF(g); DIF(b); DIF(s); DIF(t);
+// triangle setup, computed once per image (not once per band): bands only clip the row range and
+// draw
+typedef struct
+{
+  const PP* p;
+  float id, k0, k0x, k0y, k1, k1x, k1y, l0x, l1x;
+  float zA, zB, zC, iwA, iwB, iwC, rA, rB, rC, gA, gB, gC, bA, bB, bC, sA, sB, sC, tA, tB, tC;
+  int y0, y1, xa, xb; // bounding box on screen, x already clipped to the image
+} Tri;
+#define MAX_TRIS (MAX_POLYS * 8)
+static Tri tris[MAX_TRIS];
+static int ntris, ntris_op; // tris[0..ntris_op) are opaque, the rest translucent
+
+static void tri_prepare(const PP* p, const VP* A, const VP* B, const VP* C)
+{
+  if (ntris >= MAX_TRIS)
+    return;
+  float d = (B->x - A->x) * (C->y - A->y) - (C->x - A->x) * (B->y - A->y);
+  if (fabsf(d) < 1e-6f)
+    return;
+  Tri* T = &tris[ntris];
+  float id = 1.0f / d;
+  int y0 = (int)floorf(fminf(A->y, fminf(B->y, C->y))),
+      y1 = (int)ceilf(fmaxf(A->y, fmaxf(B->y, C->y)));
+  int xa = (int)floorf(fminf(A->x, fminf(B->x, C->x))),
+      xb = (int)ceilf(fmaxf(A->x, fmaxf(B->x, C->x)));
+  if (xa < 0)
+    xa = 0;
+  if (xb > AN - 1)
+    xb = AN - 1;
+  if (y1 < 0 || y0 > AT - 1 || xa > xb)
+    return; // nothing of it lands in the image
+  T->p = p;
+  T->id = id;
+  T->y0 = y0;
+  T->y1 = y1;
+  T->xa = xa;
+  T->xb = xb;
+  // barycentric weights of A and B as linear functions: l = (k + kx*px + ky*py) / d
+  T->k0 = B->x * C->y - C->x * B->y;
+  T->k0x = B->y - C->y;
+  T->k0y = C->x - B->x;
+  T->k1 = C->x * A->y - A->x * C->y;
+  T->k1x = C->y - A->y;
+  T->k1y = A->x - C->x;
+  T->l0x = T->k0x * id;
+  T->l1x = T->k1x * id;
+  // atributo = aC + l0*(aA - aC) + l1*(aB - aC)
+#define DIF(c)                                                                                     \
+  T->c##A = A->c - C->c;                                                                           \
+  T->c##B = B->c - C->c;                                                                           \
+  T->c##C = C->c
+  DIF(z);
+  DIF(iw);
+  DIF(r);
+  DIF(g);
+  DIF(b);
+  DIF(s);
+  DIF(t);
 #undef DIF
-    const uint8_t *io = tj->io;
-    uint16_t disp3d = (uint16_t)(io[0x60] | io[0x61] << 8);
-    int prueba_alfa = (disp3d >> 2) & 1, ref_alfa = io[0x340] & 31, mezcla_alfa = (disp3d >> 3) & 1;
-    int modo = p->modo, alfa_poli = p->alfa, idp = p->id, va = alfa_poli * 2 + 1;
-    int mascara = modo == 3 && idp == 0, sombra = modo == 3 && idp != 0;
-    const float eps = -1e-4f;
-    for (int y = y0; y <= y1; y++) {
-        float py = (float)y + 0.5f;
-        float px0 = (float)xa + 0.5f;
-        float l0 = (k0 + k0x * px0 + k0y * py) * id, l1 = (k1 + k1x * px0 + k1y * py) * id;
-        // tramo de la fila dentro del triángulo: l0, l1 y l2 = 1 - l0 - l1 >= 0
-        float lo = 0, hi = (float)(xb - xa);
-        float base[3] = {l0, l1, 1 - l0 - l1}, paso[3] = {l0x, l1x, -l0x - l1x};
-        int fuera = 0;
-        for (int e = 0; e < 3; e++) {
-            if (paso[e] > 0) { float c = (eps - base[e]) / paso[e]; if (c > lo) lo = c; }
-            else if (paso[e] < 0) { float c = (eps - base[e]) / paso[e]; if (c < hi) hi = c; }
-            else if (base[e] < eps) fuera = 1;
-        }
-        if (fuera || lo > hi) continue;
-        int xi = xa + (int)ceilf(lo), xf = xa + (int)floorf(hi);
-        if (xi < xa) xi = xa;
-        if (xf > xb) xf = xb;
-        l0 += l0x * (float)(xi - xa);
-        l1 += l1x * (float)(xi - xa);
-        for (int x = xi; x <= xf; x++, l0 += l0x, l1 += l1x) {
-            int i = y * AN + x;
-            // Con un vértice pegado a la cámara (1/w enorme) y los demás lejos, en el borde (eps) esto puede dar ~0 o
-            // negativo: w y los colores se disparan. Eso ya está fuera del triángulo: no se pinta (el juego se
-            // cerraba al atravesar al Rey Boo en su misión: con la cámara dentro, el índice de la tabla toon salía
-            // negativo y se leía fuera de la memoria)
-            float iwp = iwC + l0 * iwA + l1 * iwB;
-            if (!(iwp > 0)) continue;
-            float w = 1.0f / iwp;
-            // w-buffer: w no es lineal en pantalla (1/w sí), así que se usa el w ya corregido
-            uint32_t zi = tj->wbuf ? (uint32_t)(w * 0x1000) : (uint32_t)((zC + l0 * zA + l1 * zB) * 0xFFFFFF);
-            int detras = p->prof_igual ? (zi > prof_buf[i] + 0x200 || zi + 0x200 < prof_buf[i]) : zi >= prof_buf[i];
-            if (mascara) {
-                if (detras) sombra_buf[i] = 1;
-                continue;
-            }
-            if (detras) continue;
-            if (sombra && (!sombra_buf[i] || id_buf[i] == idp)) continue;
-            int vr = (int)((rC + l0 * rA + l1 * rB) * w * 2 + 0.5f);
-            int vg = (int)((gC + l0 * gA + l1 * gB) * w * 2 + 0.5f);
-            int vb = (int)((bC + l0 * bA + l1 * bB) * w * 2 + 0.5f);
-            vr = vr < 0 ? 0 : vr > 63 ? 63 : vr;  // como la consola: 0..63 (y la tabla toon solo tiene 32)
-            vg = vg < 0 ? 0 : vg > 63 ? 63 : vg;
-            vb = vb < 0 ? 0 : vb > 63 ? 63 : vb;
-            int cr = vr, cg = vg, cb = vb, ca = va;
-            if (modo == 2) {  // toon / resaltado: tabla según el rojo
-                uint32_t o = 0x380 + (uint32_t)(vr >> 1) * 2;
-                uint16_t tc = (uint16_t)(io[o] | io[o + 1] << 8);
-                if ((disp3d >> 1) & 1) {
-                    cr = vr + (tc & 31) * 2; cg = vr + ((tc >> 5) & 31) * 2; cb = vr + ((tc >> 10) & 31) * 2;
-                    if (cr > 63) cr = 63;
-                    if (cg > 63) cg = 63;
-                    if (cb > 63) cb = 63;
-                } else {
-                    cr = (tc & 31) * 2 + 1; cg = ((tc >> 5) & 31) * 2 + 1; cb = ((tc >> 10) & 31) * 2 + 1;
-                }
-                vr = cr; vg = cg; vb = cb;
-            }
-            if (p->texturas) {
-                float s = (sC + l0 * sA + l1 * sB) * w, t = (tC + l0 * tA + l1 * tB) * w;
-                int ta;
-                uint16_t tcol = texel(p->teximage, p->pltt, (int)floorf(s), (int)floorf(t), &ta);
-                int tr = (tcol & 31) * 2 + ((tcol & 31) ? 1 : 0);
-                int tg = ((tcol >> 5) & 31) * 2 + (((tcol >> 5) & 31) ? 1 : 0);
-                int tb = ((tcol >> 10) & 31) * 2 + (((tcol >> 10) & 31) ? 1 : 0);
-                int ta6 = ta * 2 + (ta ? 1 : 0);
-                if (modo == 1) {  // calcomanía
-                    cr = (tr * ta6 + vr * (63 - ta6)) / 64;
-                    cg = (tg * ta6 + vg * (63 - ta6)) / 64;
-                    cb = (tb * ta6 + vb * (63 - ta6)) / 64;
-                } else {  // modular (y toon con textura)
-                    cr = ((tr + 1) * (vr + 1) - 1) / 64;
-                    cg = ((tg + 1) * (vg + 1) - 1) / 64;
-                    cb = ((tb + 1) * (vb + 1) - 1) / 64;
-                    ca = ((ta6 + 1) * (va + 1) - 1) / 64;
-                }
-            }
-            int a5 = ca >> 1;
-            if (a5 == 0) continue;
-            if (prueba_alfa && a5 <= ref_alfa) continue;
-            if (p->niebla) {
-                int dn = densidad(zi);
-                cr = (nb_r * dn + cr * (128 - dn)) >> 7;
-                cg = (nb_g * dn + cg * (128 - dn)) >> 7;
-                cb = (nb_b * dn + cb * (128 - dn)) >> 7;
-            }
-            uint16_t col = (uint16_t)((cr >> 1) | (cg >> 1) << 5 | (cb >> 1) << 10);
-            if (a5 < 31 && mezcla_alfa) {
-                if (capa_trasl && id_buf[i] == idp && alfa_buf[i] < 31 && alfa_buf[i] > 0) continue;
-                if (alfa_buf[i]) {
-                    uint16_t d0 = color_buf[i];
-                    int dr = d0 & 31, dg = (d0 >> 5) & 31, db = (d0 >> 10) & 31;
-                    int nr = ((cr >> 1) * (a5 + 1) + dr * (31 - a5)) / 32;
-                    int ng = ((cg >> 1) * (a5 + 1) + dg * (31 - a5)) / 32;
-                    int nb = ((cb >> 1) * (a5 + 1) + db * (31 - a5)) / 32;
-                    col = (uint16_t)(nr | ng << 5 | nb << 10);
-                    a5 = a5 > alfa_buf[i] ? a5 : alfa_buf[i];
-                }
-                if (p->act_prof_trasl) prof_buf[i] = zi;
-            } else {
-                prof_buf[i] = zi;
-            }
-            color_buf[i] = col;
-            alfa_buf[i] = (uint8_t)a5;
-            id_buf[i] = (uint8_t)idp;
-        }
-    }
+  ntris++;
 }
 
-static void pinta_banda(int yb0, int yb1) {
-    const Trabajo *tj = &trabajo;
-    const uint8_t *io = tj->io;
-    uint32_t clear = (uint32_t)(io[0x350] | io[0x351] << 8 | io[0x352] << 16 | io[0x353] << 24);
-    uint16_t clear_prof = (uint16_t)((io[0x354] | io[0x355] << 8) & 0x7FFF);
-    uint32_t cz = (uint32_t)clear_prof * 0x200 + 0x1FF;
-    uint16_t cc = gx_fondo_con_niebla(clear, cz);
-    uint8_t ca = (clear >> 16) & 31, cid = (clear >> 24) & 63;
-    for (int i = yb0 * AN; i < (yb1 + 1) * AN; i++) {
-        color_buf[i] = cc; alfa_buf[i] = ca; prof_buf[i] = cz; id_buf[i] = cid; sombra_buf[i] = 0;
+// triangles of the image, called after prepare(): opaque polygons first, then translucent ones,
+// each in list order
+static void build_tris(void)
+{
+  ntris = 0;
+  for (int pass_num = 0; pass_num < 2; pass_num++)
+  {
+    for (int k = 0; k < npp; k++)
+    {
+      const PP* q = &pp[k];
+      if (q->translucent != pass_num)
+        continue;
+      for (int j = 1; j + 1 < q->n; j++)
+        tri_prepare(q, &q->v[0], &q->v[j], &q->v[j + 1]);
     }
-    int en_mascara = 0;
-    for (int pasada = 0; pasada < 2; pasada++)  // primero los opacos, luego los translúcidos
-        for (int k = 0; k < npp; k++) {
-            const PP *p = &pp[k];
-            if (p->translucido != pasada) continue;
-            int mascara = p->modo == 3 && p->id == 0;
-            if (mascara && !en_mascara) memset(sombra_buf + yb0 * AN, 0, (size_t)(yb1 - yb0 + 1) * AN);
-            en_mascara = mascara;
-            for (int j = 1; j + 1 < p->n; j++) triangulo(p, &p->v[0], &p->v[j], &p->v[j + 1], yb0, yb1, tj, pasada);
+    if (!pass_num)
+      ntris_op = ntris;
+  }
+}
+
+static void triangle(const Tri* T, int yb0, int yb1, const Job* tj, int layer_trans)
+{
+  const PP* p = T->p;
+  int y0 = T->y0, y1 = T->y1, xa = T->xa, xb = T->xb;
+  if (y0 < yb0)
+    y0 = yb0;
+  if (y1 > yb1)
+    y1 = yb1;
+  if (y0 > y1)
+    return;
+  const float id = T->id, k0 = T->k0, k0x = T->k0x, k0y = T->k0y, k1 = T->k1, k1x = T->k1x,
+              k1y = T->k1y;
+  const float l0x = T->l0x, l1x = T->l1x;
+  const float zA = T->zA, zB = T->zB, zC = T->zC, iwA = T->iwA, iwB = T->iwB, iwC = T->iwC;
+  const float rA = T->rA, rB = T->rB, rC = T->rC, gA = T->gA, gB = T->gB, gC = T->gC;
+  const float bA = T->bA, bB = T->bB, bC = T->bC, sA = T->sA, sB = T->sB, sC = T->sC;
+  const float tA = T->tA, tB = T->tB, tC = T->tC;
+  const uint8_t* io = tj->io;
+  uint16_t disp3d = (uint16_t)(io[0x60] | io[0x61] << 8);
+  int test_alpha = (disp3d >> 2) & 1, ref_alpha = io[0x340] & 31, mix_alpha = (disp3d >> 3) & 1;
+  int mode = p->mode, alpha_poly = p->alpha, idp = p->id, va = alpha_poly * 2 + 1;
+  const int wbuf = tj->wbuf;
+  TexC* const tc = p->tc;
+  const uint32_t ep = epoch;
+  int tw = 0, th = 0, rep_s = 0, flip_s = 0, rep_t = 0, flip_t = 0;
+  if (tc)
+  { // wrap flags of the texture, once per triangle
+    uint32_t ti = p->teximage;
+    tw = tc->w;
+    th = tc->h;
+    rep_s = (ti >> 16) & 1;
+    rep_t = (ti >> 17) & 1;
+    flip_s = (ti >> 18) & 1;
+    flip_t = (ti >> 19) & 1;
+  }
+  const float eps = -1e-4f;
+  for (int y = y0; y <= y1; y++)
+  {
+    float py = (float)y + 0.5f;
+    float px0 = (float)xa + 0.5f;
+    float l0 = (k0 + k0x * px0 + k0y * py) * id, l1 = (k1 + k1x * px0 + k1y * py) * id;
+    // stretch of the row inside the triangle: l0, l1 and l2 = 1 - l0 - l1 >= 0
+    float lo = 0, hi = (float)(xb - xa);
+    float base[3] = {l0, l1, 1 - l0 - l1}, step[3] = {l0x, l1x, -l0x - l1x};
+    int outside = 0;
+    for (int e = 0; e < 3; e++)
+    {
+      if (step[e] > 0)
+      {
+        float c = (eps - base[e]) / step[e];
+        if (c > lo)
+          lo = c;
+      }
+      else if (step[e] < 0)
+      {
+        float c = (eps - base[e]) / step[e];
+        if (c < hi)
+          hi = c;
+      }
+      else if (base[e] < eps)
+        outside = 1;
+    }
+    if (outside || lo > hi)
+      continue;
+    int xi = xa + (int)ceilf(lo), xf = xa + (int)floorf(hi);
+    if (xi < xa)
+      xi = xa;
+    if (xf > xb)
+      xf = xb;
+    l0 += l0x * (float)(xi - xa);
+    l1 += l1x * (float)(xi - xa);
+    for (int x = xi; x <= xf; x++, l0 += l0x, l1 += l1x)
+    {
+      int i = y * AN + x;
+      // With a vertex stuck to the camera (huge 1/w) and the others far, at the edge (eps) this can
+      // give ~0 or negative: w and the colors blow up. That is already outside the triangle: not
+      // painted (the game closed when going through King Boo in his mission: with the camera
+      // inside, the index of the toon table came out negative and was read outside memory)
+      float iwp = iwC + l0 * iwA + l1 * iwB;
+      if (!(iwp > 0))
+        continue;
+      // w-buffer: w is not linear on screen (1/w is), so the already corrected w is used
+      // z-buffer mode: depth does not need w, so the division waits until the depth test has passed
+      float w;
+      uint32_t zi;
+      if (wbuf)
+      {
+        w = 1.0f / iwp;
+        zi = (uint32_t)(w * 0x1000);
+      }
+      else
+      {
+        zi = (uint32_t)((zC + l0 * zA + l1 * zB) * 0xFFFFFF);
+      }
+      if (p->depth_same ? (zi > depth_buf[i] + 0x200 || zi + 0x200 < depth_buf[i])
+                        : zi >= depth_buf[i])
+        continue;
+      if (!wbuf)
+        w = 1.0f / iwp;
+      int vr = (int)((rC + l0 * rA + l1 * rB) * w * 2 + 0.5f);
+      int vg = (int)((gC + l0 * gA + l1 * gB) * w * 2 + 0.5f);
+      int vb = (int)((bC + l0 * bA + l1 * bB) * w * 2 + 0.5f);
+      vr = vr < 0    ? 0
+           : vr > 63 ? 63
+                     : vr; // like the console: 0..63 (and the toon table only has 32)
+      vg = vg < 0 ? 0 : vg > 63 ? 63 : vg;
+      vb = vb < 0 ? 0 : vb > 63 ? 63 : vb;
+      int cr = vr, cg = vg, cb = vb, ca = va;
+      if (mode == 2)
+      { // toon / highlight: table according to red
+        uint32_t o = 0x380 + (uint32_t)(vr >> 1) * 2;
+        uint16_t tc = (uint16_t)(io[o] | io[o + 1] << 8);
+        if ((disp3d >> 1) & 1)
+        {
+          cr = vr + (tc & 31) * 2;
+          cg = vr + ((tc >> 5) & 31) * 2;
+          cb = vr + ((tc >> 10) & 31) * 2;
+          if (cr > 63)
+            cr = 63;
+          if (cg > 63)
+            cg = 63;
+          if (cb > 63)
+            cb = 63;
         }
+        else
+        {
+          cr = (tc & 31) * 2 + 1;
+          cg = ((tc >> 5) & 31) * 2 + 1;
+          cb = ((tc >> 10) & 31) * 2 + 1;
+        }
+        vr = cr;
+        vg = cg;
+        vb = cb;
+      }
+      if (p->textures)
+      {
+        float s = (sC + l0 * sA + l1 * sB) * w, t = (tC + l0 * tA + l1 * tB) * w;
+        int ta;
+        uint16_t tcol;
+        if (tc)
+        {
+          int si = (int)floorf(s), ti_ = (int)floorf(t);
+          // same wrap as texel(), then one cache read
+          if (rep_s)
+          {
+            if (flip_s)
+            {
+              int per = si & (2 * tw - 1);
+              si = per >= tw ? 2 * tw - 1 - per : per;
+            }
+            else
+              si &= tw - 1;
+          }
+          else
+            si = si < 0 ? 0 : si >= tw ? tw - 1 : si;
+          if (rep_t)
+          {
+            if (flip_t)
+            {
+              int per = ti_ & (2 * th - 1);
+              ti_ = per >= th ? 2 * th - 1 - per : per;
+            }
+            else
+              ti_ &= th - 1;
+          }
+          else
+            ti_ = ti_ < 0 ? 0 : ti_ >= th ? th - 1 : ti_;
+          uint32_t* slot = &tc->px[(size_t)ti_ * (size_t)tw + (size_t)si];
+          uint32_t e = *slot;
+          if ((e >> 20) != ep)
+          {
+            int a;
+            uint16_t c = texel(p->teximage, p->pltt, si, ti_, &a);
+            e = ep << 20 | (uint32_t)a << 15 | (c & 0x7FFF);
+            *slot = e;
+          }
+          tcol = (uint16_t)(e & 0x7FFF);
+          ta = (int)((e >> 15) & 31);
+        }
+        else
+        {
+          tcol = texel(p->teximage, p->pltt, (int)floorf(s), (int)floorf(t), &ta);
+        }
+        int tr = (tcol & 31) * 2 + ((tcol & 31) ? 1 : 0);
+        int tg = ((tcol >> 5) & 31) * 2 + (((tcol >> 5) & 31) ? 1 : 0);
+        int tb = ((tcol >> 10) & 31) * 2 + (((tcol >> 10) & 31) ? 1 : 0);
+        int ta6 = ta * 2 + (ta ? 1 : 0);
+        if (mode == 1)
+        { // decal
+          cr = (tr * ta6 + vr * (63 - ta6)) / 64;
+          cg = (tg * ta6 + vg * (63 - ta6)) / 64;
+          cb = (tb * ta6 + vb * (63 - ta6)) / 64;
+        }
+        else
+        { // modulate (and toon with texture)
+          cr = ((tr + 1) * (vr + 1) - 1) / 64;
+          cg = ((tg + 1) * (vg + 1) - 1) / 64;
+          cb = ((tb + 1) * (vb + 1) - 1) / 64;
+          ca = ((ta6 + 1) * (va + 1) - 1) / 64;
+        }
+      }
+      int a5 = ca >> 1;
+      if (a5 == 0)
+        continue;
+      if (test_alpha && a5 <= ref_alpha)
+        continue;
+      uint16_t col = (uint16_t)((cr >> 1) | (cg >> 1) << 5 | (cb >> 1) << 10);
+      if (a5 < 31 && mix_alpha)
+      {
+        if (layer_trans && id_buf[i] == idp && alpha_buf[i] < 31 && alpha_buf[i] > 0)
+          continue;
+        if (alpha_buf[i])
+        {
+          uint16_t d0 = color_buf[i];
+          int dr = d0 & 31, dg = (d0 >> 5) & 31, db = (d0 >> 10) & 31;
+          int nr = ((cr >> 1) * (a5 + 1) + dr * (31 - a5)) / 32;
+          int ng = ((cg >> 1) * (a5 + 1) + dg * (31 - a5)) / 32;
+          int nb = ((cb >> 1) * (a5 + 1) + db * (31 - a5)) / 32;
+          col = (uint16_t)(nr | ng << 5 | nb << 10);
+          a5 = a5 > alpha_buf[i] ? a5 : alpha_buf[i];
+        }
+        if (p->act_depth_trans)
+          depth_buf[i] = zi;
+      }
+      else
+      {
+        depth_buf[i] = zi;
+      }
+      color_buf[i] = col;
+      alpha_buf[i] = (uint8_t)a5;
+      id_buf[i] = (uint8_t)idp;
+    }
+  }
+}
+
+static void paint_band(int yb0, int yb1)
+{
+  const Job* tj = &job;
+  const uint8_t* io = tj->io;
+  uint32_t clear = (uint32_t)(io[0x350] | io[0x351] << 8 | io[0x352] << 16 | io[0x353] << 24);
+  uint16_t clear_depth = (uint16_t)((io[0x354] | io[0x355] << 8) & 0x7FFF);
+  uint16_t cc = clear & 0x7FFF;
+  uint8_t ca = (clear >> 16) & 31, cid = (clear >> 24) & 63;
+  uint32_t cz = (uint32_t)clear_depth * 0x200 + 0x1FF;
+  for (int i = yb0 * AN; i < (yb1 + 1) * AN; i++)
+  {
+    color_buf[i] = cc;
+    alpha_buf[i] = ca;
+    depth_buf[i] = cz;
+    id_buf[i] = cid;
+  }
+  for (int pass_num = 0; pass_num < 2; pass_num++)
+  { // first the opaque, then the translucent
+    int k0 = pass_num ? ntris_op : 0, k1 = pass_num ? ntris : ntris_op;
+    for (int k = k0; k < k1; k++)
+    {
+      const Tri* T = &tris[k];
+      if (T->y1 < yb0 || T->y0 > yb1)
+        continue; // outside this band
+      triangle(T, yb0, yb1, tj, pass_num);
+    }
+  }
 }
 
 #define NBANDAS 24
-static HANDLE ev_banda_ir[NBANDAS], ev_banda_hecha[NBANDAS], ev_trabajo, ev_libre;
-static int nbandas = NBANDAS;  // tantas como núcleos menos uno (el del juego), como mucho NBANDAS
+static HANDLE ev_band_ir[NBANDAS], ev_band_done[NBANDAS], ev_job, ev_free;
+static int nbandas = NBANDAS; // as many as cores minus one (the game's), at most NBANDAS
 
-static DWORD WINAPI hilo_banda(LPVOID arg) {
-    int b = (int)(intptr_t)arg;
-    int filas = AL / nbandas;
-    for (;;) {
-        WaitForSingleObject(ev_banda_ir[b], INFINITE);
-        pinta_banda(b * filas, b == nbandas - 1 ? AL - 1 : b * filas + filas - 1);
-        SetEvent(ev_banda_hecha[b]);
+// balanced drawing: the image is cut into small row chunks and every thread takes the next free
+// chunk from a shared counter, so a thread that got cheap rows (sky) keeps helping with the
+// expensive ones (road, kart). Before, each thread had one fixed slice and the scene waited for the
+// slowest slice (2 to 3 times the average in slow scenes)
+static volatile LONG chunk_sig; // next chunk to draw
+static int chunk_rows = 8, n_chunks = 1; // rows per chunk and chunks in the image, set by paint_all
+
+static DWORD WINAPI band_thread(LPVOID arg)
+{
+  int b = (int)(intptr_t)arg;
+  for (;;)
+  {
+    WaitForSingleObject(ev_band_ir[b], INFINITE);
+    for (;;)
+    {
+      int i = (int)InterlockedIncrement(&chunk_sig) - 1;
+      if (i >= n_chunks)
+        break;
+      int y0 = i * chunk_rows, y1 = y0 + chunk_rows - 1;
+      if (y1 > AT - 1)
+        y1 = AT - 1;
+      paint_band(y0, y1);
     }
+    SetEvent(ev_band_done[b]);
+  }
 }
 
-// ---- imágenes intermedias (MKDS_FPS = 120, 180 o 240) -----------------------------------
-// El juego va a 60. Entre la escena anterior y la nueva se pintan 1, 2 o 3 escenas intermedias: cada
-// polígono de la nueva se empareja con el de la anterior (mismo orden, misma textura, paleta y tipo; se
-// toleran polígonos que aparecen o desaparecen) y sus vértices sin recortar se mezclan.
-static int sub_por_escena = -1;  // imágenes intermedias por escena (MKDS_FPS / 60 - 1)
-
-// 60, 120, 180 o 240 (también desde el menú, en marcha)
-void gx_pon_fps(int fps) {
-    int n = fps / 60 - 1;
-    sub_por_escena = n < 0 ? 0 : n > 3 ? 3 : n;
-}
-// La escena anterior; con 3D en las dos pantallas, una por vista
-typedef struct { Vert v[4]; int n; uint32_t attr, teximage, pltt; } Ant;
-static Ant ant_v[2][MAX_POLIS];
-static int nant_v[2], vista;
-#define ant ant_v[vista]
-#define nant nant_v[vista]
-static int pareja[MAX_POLIS];  // para cada polígono de la escena: su pareja en la anterior, o -1
-static Poli intermedia[MAX_POLIS];
-
-static int mismo(const Poli *p, int j) {
-    return ant[j].n == p->ncrudo && ant[j].teximage == p->teximage && ant[j].pltt == p->pltt &&
-           (ant[j].attr & 0xFFFF) == (p->attr & 0xFFFF);
+static void paint_all(void)
+{
+  // about 6 chunks per thread, never fewer than 4 rows each
+  chunk_rows = AT / (nbandas * 6);
+  if (chunk_rows < 4)
+    chunk_rows = 4;
+  n_chunks = (AT + chunk_rows - 1) / chunk_rows;
+  chunk_sig = 0;
+  for (int b = 0; b < nbandas; b++)
+    SetEvent(ev_band_ir[b]);
+  WaitForMultipleObjects(nbandas, ev_band_done, TRUE, INFINITE);
 }
 
-// posición en pantalla (-1..1) de un vértice; detrás de la cámara, lo más parecido que se puede
-static void ndc(const Vert *v, float *x, float *y) {
-    float w = fabsf(v->w) > 1e-3f ? fabsf(v->w) : 1e-3f;
-    *x = v->x / w;
-    *y = v->y / w;
-}
-
-// cuánto se ha movido en pantalla un polígono respecto al de la escena anterior, sin contar el movimiento
-// general de la escena (gx, gy: la cámara), por vértice; y su tamaño
-static float desplazamiento(const Poli *p, int j, float gx, float gy, float *tam) {
-    float d = 0, x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
-    for (int k = 0; k < p->ncrudo; k++) {
-        float ax, ay, bx, by;
-        ndc(&ant[j].v[k], &ax, &ay);
-        ndc(&p->crudo[k], &bx, &by);
-        d += fabsf(bx - ax - gx) + fabsf(by - ay - gy);
-        if (bx < x0) x0 = bx;
-        if (bx > x1) x1 = bx;
-        if (by < y0) y0 = by;
-        if (by > y1) y1 = by;
+static DWORD WINAPI render_thread(LPVOID arg)
+{
+  (void)arg;
+  for (;;)
+  {
+    WaitForSingleObject(ev_job, INFINITE);
+    LARGE_INTEGER scene_start;
+    QueryPerformanceCounter(&scene_start);
+    const Poly* lst = polys[job.lst];
+    int n = npolis[job.lst];
+    int other = (output_current + 1) % 3;
+    Output* S = &outputs[other];
+    texc_scene(); // texture cache: new epoch for this scene
+    prepare(&job, lst, n);
+    build_tris();
+    paint_all();
+    if (esc == 1)
+    {
+      memcpy(S->color, color_buf, sizeof S->color);
+      memcpy(S->alpha, alpha_buf, sizeof S->alpha);
     }
-    *tam = (x1 - x0) + (y1 - y0);
-    return d / (float)p->ncrudo;
-}
-
-// Pareja de cada polígono en la escena anterior. Entre los iguales (misma textura, paleta y tipo) de alrededor
-// de su sitio en la lista se elige el que estaba MÁS CERCA en pantalla: con muchos objetos iguales (cubos de
-// objetos, tuberías) ir solo por orden emparejaba caras de un cubo con las de otro cuando el juego cambiaba qué
-// cubos dibuja al acercarse, y en la imagen intermedia salían estiradas. Si ni el más cercano está cerca, sin pareja.
-static uint8_t usado[MAX_POLIS];
-
-static float movs_x[MAX_POLIS], movs_y[MAX_POLIS];
-static int por_float(const void *a, const void *b) {
-    float x = *(const float *)a, y = *(const float *)b;
-    return (x > y) - (x < y);
-}
-
-// movimiento general de la escena (sobre todo la cámara): la mediana del desplazamiento de los polígonos que
-// están en el mismo sitio de la lista que en la escena anterior
-static void movimiento_general(const Poli *lst, int n, float *gx, float *gy) {
-    int m = 0;
-    for (int i = 0; i < n && i < nant; i++) {
-        if (lst[i].ncrudo < 3 || !mismo(&lst[i], i)) continue;
-        float ax, ay, bx, by;
-        ndc(&ant[i].v[0], &ax, &ay);
-        ndc(&lst[i].crudo[0], &bx, &by);
-        movs_x[m] = bx - ax;
-        movs_y[m] = by - ay;
-        m++;
-    }
-    *gx = *gy = 0;
-    if (!m) return;
-    qsort(movs_x, (size_t)m, sizeof(float), por_float);
-    qsort(movs_y, (size_t)m, sizeof(float), por_float);
-    *gx = movs_x[m / 2];
-    *gy = movs_y[m / 2];
-}
-
-// Las coordenadas de textura de cada vértice casi iguales que en la escena anterior (hasta 1/4 de la textura: las
-// animadas y las de reflejos cambian poco de una escena a otra). El suelo de un circuito son muchos polígonos con la
-// misma textura: al avanzar, el juego cambia qué trozos dibuja y en qué orden, y un trozo se emparejaba con otro;
-// en la imagen intermedia se mezclaban sus coordenadas y la textura salía corrida o rara un instante
-volatile int g_parejas_uv;  // parejas elegidas con otras coordenadas (solo con MKDS_EMPAREJA_SIN_UV; MKDS_MIDE)
-static int uv_igual(const Poli *p, int j) {
-    float w = (float)(8 << ((p->teximage >> 20) & 7)) / 4, h = (float)(8 << ((p->teximage >> 23) & 7)) / 4;
-    for (int k = 0; k < p->ncrudo; k++)
-        if (fabsf(ant[j].v[k].s - p->crudo[k].s) > w || fabsf(ant[j].v[k].t - p->crudo[k].t) > h) return 0;
-    return 1;
-}
-static int uv_cerca(const Poli *p, int j) {
-    static int sin = -1;  // MKDS_EMPAREJA_SIN_UV=1: como antes (para comparar)
-    if (sin < 0) sin = getenv("MKDS_EMPAREJA_SIN_UV") != NULL;
-    return sin || uv_igual(p, j);
-}
-
-// con 3D en las dos pantallas cada vista va de dos en dos fotogramas: en ese tiempo se mueve el doble
-static float margen_mov = 1;
-
-// Al girar deprisa (derrapando) el juego cambia qué trozos del circuito dibuja y su sitio en la lista salta cientos de
-// polígonos: con la búsqueda de alrededor se quedaban sin pareja y, en la imagen intermedia, cada trozo así iba ya en su
-// sitio final mientras los de al lado seguían a medio camino (se abría el suelo). Última pasada: entre todos los que
-// quedan libres, el que tenga lo mismo (textura, paleta, tipo y coordenadas de textura) y esté más cerca, en coordenadas
-// de recorte: con polígonos detrás de la cámara, desplazamiento() no sirve.
-#define NCUBOS 4096
-static int cubo[NCUBOS], cubo_sig[MAX_POLIS];
-
-static unsigned clave_poli(uint32_t ti, uint32_t pl, uint32_t attr, int n) {
-    return ((ti * 2654435761u) ^ (pl * 40503u) ^ ((attr & 0xFFFF) * 2166136261u) ^ (uint32_t)n * 16777619u) >> 20;
-}
-
-// cuánto ha saltado el vértice que más se ha movido, con el w del polígono: un trozo de suelo grande tiene vértices
-// pegados a la cámara, y con su propio w casi cero cualquier giro parecía un salto
-static float dist_recorte(const Poli *p, int j) {
-    float m = 0, e = 1e-3f;
-    for (int k = 0; k < p->ncrudo; k++) e = fmaxf(e, fmaxf(fabsf(ant[j].v[k].w), fabsf(p->crudo[k].w)));
-    for (int k = 0; k < p->ncrudo; k++) {
-        const Vert *a = &ant[j].v[k], *b = &p->crudo[k];
-        float d = (fabsf(a->x - b->x) + fabsf(a->y - b->y)) / e;
-        if (d > m) m = d;
-    }
-    return m;
-}
-
-static int empareja_resto(const Poli *lst, int n) {
-    int hechos = 0;
-    memset(cubo, -1, sizeof cubo);
-    for (int k = nant - 1; k >= 0; k--) {
-        if (usado[k]) continue;
-        unsigned c = clave_poli(ant[k].teximage, ant[k].pltt, ant[k].attr, ant[k].n);
-        cubo_sig[k] = cubo[c];
-        cubo[c] = k;
-    }
-    for (int i = 0; i < n; i++) {
-        if (pareja[i] >= 0 || lst[i].ncrudo < 3) continue;
-        int mejor = -1;
-        float mejor_d = 0.6f * margen_mov;  // el límite de interpola(): más lejos no se mezclaría
-        for (int k = cubo[clave_poli(lst[i].teximage, lst[i].pltt, lst[i].attr, lst[i].ncrudo)]; k >= 0; k = cubo_sig[k]) {
-            if (usado[k] || !mismo(&lst[i], k) || !uv_igual(&lst[i], k)) continue;
-            float d = dist_recorte(&lst[i], k);
-            if (d < mejor_d) { mejor_d = d; mejor = k; }
+    else
+    {
+      memcpy(S->hd_color, color_buf, (size_t)AN * AT * 2);
+      memcpy(S->hd_alpha, alpha_buf, (size_t)AN * AT);
+      for (int y = 0; y < 192; y++) // at DS size: the central point of each block
+        for (int x = 0; x < 256; x++)
+        {
+          int i = (y * esc + esc / 2) * AN + x * esc + esc / 2;
+          S->color[y * 256 + x] = color_buf[i];
+          S->alpha[y * 256 + x] = alpha_buf[i];
         }
-        if (mejor < 0) continue;
-        pareja[i] = mejor;
-        usado[mejor] = 1;
-        hechos++;
     }
-    return hechos;
+    output_current = other;
+    polys_last = npp;
+    cont_frames++;
+    SetEvent(ev_free);
+    LARGE_INTEGER scene_end;
+    QueryPerformanceCounter(&scene_end);
+    log_note_scene(scene_end.QuadPart - scene_start.QuadPart, npp);
+  }
 }
 
-static int empareja(const Poli *lst, int n) {
-    int j = 0, hechos = 0;
-    memset(usado, 0, (size_t)nant);
-    float gx, gy;
-    movimiento_general(lst, n, &gx, &gy);
-    for (int i = 0; i < n; i++) {
-        pareja[i] = -1;
-        if (lst[i].ncrudo < 3) continue;
-        static int en_orden = -1;  // MKDS_EMPAREJA_ORDEN=1: como antes, el primero igual (para comparar)
-        if (en_orden < 0) en_orden = getenv("MKDS_EMPAREJA_ORDEN") != NULL;
-        if (en_orden) {
-            for (int k = j; k < nant && k < j + 48; k++)
-                if (mismo(&lst[i], k)) { pareja[i] = k; j = k + 1; hechos++; break; }
-            continue;
-        }
-        // primero la pareja en orden (la siguiente igual): en un personaje, hecho de muchos triángulos iguales y
-        // pegados, el más cercano solía ser el triángulo de al lado y el cuerpo se deshacía en las intermedias
-        int en_su_sitio = -1;
-        static int solo_cercano = -1;  // MKDS_EMPAREJA_CERCANO=1: sin este paso (para comparar)
-        if (solo_cercano < 0) solo_cercano = getenv("MKDS_EMPAREJA_CERCANO") != NULL;
-        for (int k = j; !solo_cercano && k < nant && k < j + 48; k++)
-            if (!usado[k] && mismo(&lst[i], k)) { en_su_sitio = k; break; }
-        if (en_su_sitio >= 0) {
-            float t, d = desplazamiento(&lst[i], en_su_sitio, gx, gy, &t);
-            if (d <= (0.08f + 0.25f * t) * margen_mov && uv_cerca(&lst[i], en_su_sitio)) {
-                pareja[i] = en_su_sitio;
-                if (!uv_igual(&lst[i], en_su_sitio)) g_parejas_uv++;
-                usado[en_su_sitio] = 1;
-                j = en_su_sitio + 1;
-                hechos++;
-                continue;
-            }
-        }
-        // si no encaja (cubos iguales que el juego dibuja en otro orden), el igual que menos se ha movido
-        int mejor = -1;
-        float mejor_d = 1e9f, tam = 0;
-        for (int k = j > 16 ? j - 16 : 0; k < nant && k < j + 64; k++) {
-            if (usado[k] || !mismo(&lst[i], k)) continue;
-            float t, d = desplazamiento(&lst[i], k, gx, gy, &t);
-            if (d < mejor_d && uv_cerca(&lst[i], k)) { mejor_d = d; mejor = k; tam = t; }
-        }
-        // se tiene que mover casi como la escena (un objeto que "salta" a otro igual no lo hace)
-        if (mejor < 0 || mejor_d > (0.08f + 0.25f * tam) * margen_mov) continue;
-        pareja[i] = mejor;
-        if (!uv_igual(&lst[i], mejor)) g_parejas_uv++;
-        usado[mejor] = 1;
-        j = mejor + 1;
-        hechos++;
-    }
-    return hechos + empareja_resto(lst, n);
+int video_scale(void);
+
+static void start_threads(void)
+{
+  esc = video_scale();
+  AN = 256 * esc;
+  AT = 192 * esc;
+  ev_job = CreateEventW(NULL, FALSE, FALSE, NULL);
+  ev_free = CreateEventW(NULL, FALSE, TRUE, NULL);
+  DWORD_PTR del_process = 0, del_system = 0; // cores the game can use
+  GetProcessAffinityMask(GetCurrentProcess(), &del_process, &del_system);
+  // With more bands than cores the game and the music lost their turn and more scenes were skipped
+  //(tested limiting the game to 2 and 4 cores).
+  nbandas = -1;
+  for (; del_process; del_process &= del_process - 1)
+    nbandas++;
+  if (nbandas < 1)
+    nbandas = 1;
+  if (nbandas > NBANDAS)
+    nbandas = NBANDAS;
+  for (int b = 0; b < nbandas; b++)
+  {
+    ev_band_ir[b] = CreateEventW(NULL, FALSE, FALSE, NULL);
+    ev_band_done[b] = CreateEventW(NULL, FALSE, FALSE, NULL);
+    CloseHandle(CreateThread(NULL, 0, band_thread, (LPVOID)(intptr_t)b, 0, NULL));
+  }
+  HANDLE h = CreateThread(NULL, 0, render_thread, NULL, 0, NULL);
+  SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL);
+  CloseHandle(h);
+  log_msg("3D", "scale %dx (%dx%d pixels), %d drawing threads", esc, AN, AT, nbandas);
 }
 
-static int interpola(const Poli *lst, int n, float t) {
-    for (int i = 0; i < n; i++) {
-        Poli *q = &intermedia[i];
-        *q = lst[i];
-        int j = pareja[i];
-        if (j < 0) continue;  // nuevo: tal cual
-        Vert v[4];
-        if (dist_recorte(&lst[i], j) > 0.6f * margen_mov) continue;  // salto (cámara, reaparece): tal cual
-        for (int k = 0; k < q->ncrudo; k++) {
-            const Vert *a = &ant[j].v[k], *b = &lst[i].crudo[k];
-            v[k].x = a->x + (b->x - a->x) * t; v[k].y = a->y + (b->y - a->y) * t;
-            v[k].z = a->z + (b->z - a->z) * t; v[k].w = a->w + (b->w - a->w) * t;
-            v[k].r = a->r + (b->r - a->r) * t; v[k].g = a->g + (b->g - a->g) * t; v[k].b = a->b + (b->b - a->b) * t;
-            v[k].s = a->s + (b->s - a->s) * t; v[k].t = a->t + (b->t - a->t) * t;
-        }
-        memcpy(q->v, v, sizeof(Vert) * q->ncrudo);
-        q->n = recorta(q->v, q->ncrudo);
-        if (q->n < 3) q->n = 0;
-    }
-    return n;
+// With the capture on, the scene before the one just requested is shown: on the console the 3D
+// image of a frame is the one the game prepared in the previous one, and so each view lands on its
+// screen (otherwise, in the track presentation the top view came out below and the other way
+// round). Which one (indice_fixed) is fixed instead of waiting for the new one to be painted: that
+// wait slowed the ARM7 and the music in the presentation.
+static volatile int fixed, indice_fixed;
+
+void gx_vblank(const uint8_t* io9)
+{
+  int capture = (io9[0x67] & 0x80) != 0;
+  if (!capture)
+    fixed = 0;
+  if (!swap_pending)
+    return;
+  swap_pending = 0;
+  if (!ev_job)
+    start_threads();
+  // With screen capture on (3D on both screens: track presentation, ceremony)
+  // the game alternates the top and bottom view every frame. There the scene is painted right away:
+  // if it came out a frame late (the normal case, to not slow the game) the two views would be
+  // mixed.
+  int immediate = capture;
+  if (WaitForSingleObject(ev_free, immediate ? INFINITE : 0) != WAIT_OBJECT_0)
+  {
+    // the previous scene is still being painted: this one is skipped and the game does not wait
+    npolis[list] = nvisible[list] = 0;
+    cont_skipped++;
+    return;
+  }
+  memcpy(job.io, io9, sizeof job.io);
+  job.wbuf = (swap_param >> 1) & 1;
+  job.vp_x1 = vp_x1;
+  job.vp_y1 = vp_y1;
+  job.vp_x2 = vp_x2;
+  job.vp_y2 = vp_y2;
+  job.lst = list;
+  list ^= 1; // the other list starts to be filled now
+  npolis[list] = nvisible[list] = 0;
+  if (immediate)
+  { // the previous one is already painted (waited above): that is the one shown
+    indice_fixed = output_current;
+    fixed = 1;
+  }
+  for (int q = 0; q < 4; q++)
+  { // maps and contents as they are at this swap (the game thread is the only writer of the maps)
+    snap_tex[q] = g_tex[q] ? copy_tex[q] : NULL;
+    if (g_tex[q])
+      memcpy(copy_tex[q], g_tex[q], 0x20000);
+  }
+  for (int q = 0; q < 6; q++)
+  {
+    snap_pal[q] = g_texpal[q] ? copy_pal[q] : NULL;
+    if (g_texpal[q])
+      memcpy(copy_pal[q], g_texpal[q], 0x4000);
+  }
+  SetEvent(ev_job);
 }
 
-static void guarda_anterior(const Poli *lst, int n) {
-    for (int i = 0; i < n; i++) {
-        memcpy(ant[i].v, lst[i].crudo, sizeof(Vert) * 4);
-        ant[i].n = lst[i].ncrudo;
-        ant[i].attr = lst[i].attr; ant[i].teximage = lst[i].teximage; ant[i].pltt = lst[i].pltt;
-    }
-    nant = n;
+int gx_indice(void)
+{
+  return fixed ? indice_fixed : output_current;
 }
-
-static int nvis_de(const Poli *lst, int n) {
-    int v = 0;
-    for (int i = 0; i < n; i++) v += lst[i].ncrudo >= 3;
-    return v;
+// the same buffers for a fixed output set i (read gx_indice() once and use these, so colour, alpha
+// and the big copies all come from the same scene even if a newer scene finishes while the picture
+// is being copied)
+const uint16_t* gx_color_of(int i)
+{
+  return outputs[i].color;
 }
-
-// 3D por la GPU (MKDS_GPU=1 o el menú F1; de momento solo en Windows): si no se puede, por la CPU
-volatile int g_gpu3d;
-void gx_pon_gpu(int si) { g_gpu3d = si; }
-extern volatile int g_suavizado;  // gpu3d_gl.c
-void gx_pon_suavizado(int si) { g_suavizado = si; }
-int gl3d_pinta(const void *lista, int n, int tam_pp, const uint8_t *io, int wbuf, uint16_t *color, uint8_t *alfa,
-               int an, int al);
-
-static void pinta_todo(void) {
-    if (g_gpu3d && gl3d_pinta(pp, npp, (int)sizeof(PP), trabajo.io, trabajo.wbuf, color_buf, alfa_buf, AN, AL)) return;
-    for (int b = 0; b < nbandas; b++) SetEvent(ev_banda_ir[b]);
-    WaitForMultipleObjects(nbandas, ev_banda_hecha, TRUE, INFINITE);
+const uint8_t* gx_alpha_of(int i)
+{
+  return outputs[i].alpha;
 }
-
-static double ms_imagen;  // lo que tarda en pintarse una imagen (media móvil), para las intermedias
-
-static DWORD WINAPI hilo_render(LPVOID arg) {
-    (void)arg;
-    for (;;) {
-        WaitForSingleObject(ev_trabajo, INFINITE);
-        LARGE_INTEGER t0, t1, fr;
-        QueryPerformanceCounter(&t0);
-        const Poli *lst = polis[trabajo.lst];
-        int n = npolis[trabajo.lst];
-        int otra = (salida_actual + 1) % NSAL;
-        Salida *S = &salidas[otra];
-        vista = trabajo.vista;
-        margen_mov = trabajo.doble ? 2.0f : 1.0f;
-        // con 3D en las dos pantallas, cada vista cubre dos fotogramas: el doble de pasos (video.c los reparte)
-        int pasos = trabajo.doble ? (sub_por_escena + 1) * 2 - 1 : sub_por_escena;
-        if (pasos > 7) pasos = 7;
-        int nsub = trabajo.interp && nant > 0 ? pasos : 0;
-        // En un PC justo no da tiempo a pintar todas las intermedias antes de la escena siguiente, y entonces
-        // se saltaban escenas de verdad (el 3D a tirones). Se pintan las que quepan en ~3/4 de un fotograma
-        // según lo que ha tardado cada imagen hasta ahora.
-        if (nsub && ms_imagen > 0) {
-            int caben = (int)(12.5 / ms_imagen) - 1;
-            if (caben < nsub) nsub = caben < 0 ? 0 : caben;
-        }
-        if (trabajo.doble && nsub && !(nsub & 1)) nsub--;  // impar: la mitad de los pasos cae en un fotograma justo
-        // casi nada empareja (corte de cámara, otra pantalla): esta vez sin intermedias
-        if (nsub && empareja(lst, n) * 2 < nvis_de(lst, n)) nsub = 0;
-        for (int j = 1; j <= nsub; j++) {
-            int m = interpola(lst, n, (float)j / (float)(nsub + 1));
-            prepara(&trabajo, intermedia, m);
-            pinta_todo();
-            memcpy(S->sub_color[j - 1], color_buf, (size_t)AN * AL * 2);
-            memcpy(S->sub_alfa[j - 1], alfa_buf, (size_t)AN * AL);
-        }
-        S->nsub = nsub;
-        S->doble = trabajo.doble;
-        S->pantalla = trabajo.pantalla;
-        prepara(&trabajo, lst, n);
-        pinta_todo();
-        guarda_anterior(lst, n);
-        QueryPerformanceCounter(&t1);
-        QueryPerformanceFrequency(&fr);
-        {  // para MKDS_MIDE: cuánto tarda en pintarse una escena
-            double ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)fr.QuadPart;
-            double una = ms / (nsub + 1);
-            ms_imagen = ms_imagen > 0 ? ms_imagen * 0.9 + una * 0.1 : una;
-            g_render_ms_suma += ms; g_render_n++; g_render_sub += nsub;
-            if (ms > g_render_ms_max) g_render_ms_max = ms;
-        }
-        if (esc == 1) {
-            memcpy(S->color, color_buf, sizeof S->color);
-            memcpy(S->alfa, alfa_buf, sizeof S->alfa);
-        } else {
-            memcpy(S->hd_color, color_buf, (size_t)AN * AL * 2);
-            memcpy(S->hd_alfa, alfa_buf, (size_t)AN * AL);
-            for (int y = 0; y < 192; y++)  // a tamaño de la DS: el punto central de cada bloque
-                for (int x = 0; x < 256; x++) {
-                    int i = (y * esc + esc / 2) * AN + x * esc + esc / 2;
-                    S->color[y * 256 + x] = color_buf[i];
-                    S->alfa[y * 256 + x] = alfa_buf[i];
-                }
-        }
-        salida_actual = otra;
-        polis_ultima = npp;
-        cont_frames++;
-        SetEvent(ev_libre);
-    }
+const uint16_t* gx_hd_color_of(int i)
+{
+  return outputs[i].hd_color;
 }
-
-int video_escala(void);
-
-static void arranca_hilos(void) {
-    esc = video_escala();
-    if (sub_por_escena < 0) {  // si el menú no lo ha puesto ya
-        const char *fps = getenv("MKDS_FPS");
-        gx_pon_fps(fps ? atoi(fps) : 60);
-    }
-    AN = 256 * esc;
-    AL = 192 * esc;
-    if (getenv("MKDS_GPU")) g_gpu3d = atoi(getenv("MKDS_GPU"));
-    if (getenv("MKDS_SUAVIZADO")) g_suavizado = atoi(getenv("MKDS_SUAVIZADO"));
-    ev_trabajo = CreateEventW(NULL, FALSE, FALSE, NULL);
-    ev_libre = CreateEventW(NULL, FALSE, TRUE, NULL);
-    DWORD_PTR del_proceso = 0, del_sistema = 0;  // núcleos que puede usar el juego
-    GetProcessAffinityMask(GetCurrentProcess(), &del_proceso, &del_sistema);
-    // Con más bandas que núcleos el juego y la música se quedaban sin turno y se saltaban más escenas
-    // (probado limitando el juego a 2 y 4 núcleos). MKDS_BANDAS=n las fija, para pruebas.
-    nbandas = -1;
-    for (; del_proceso; del_proceso &= del_proceso - 1) nbandas++;
-    if (getenv("MKDS_BANDAS")) nbandas = atoi(getenv("MKDS_BANDAS"));
-    if (nbandas < 1) nbandas = 1;
-    if (nbandas > NBANDAS) nbandas = NBANDAS;
-    for (int b = 0; b < nbandas; b++) {
-        ev_banda_ir[b] = CreateEventW(NULL, FALSE, FALSE, NULL);
-        ev_banda_hecha[b] = CreateEventW(NULL, FALSE, FALSE, NULL);
-        CloseHandle(CreateThread(NULL, 0, hilo_banda, (LPVOID)(intptr_t)b, 0, NULL));
-    }
-    HANDLE h = CreateThread(NULL, 0, hilo_render, NULL, 0, NULL);
-    SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL);
-    CloseHandle(h);
+const uint8_t* gx_hd_alpha_of(int i)
+{
+  return outputs[i].hd_alpha;
 }
-
-// Con la captura encendida se muestra la escena anterior a la que se acaba de pedir: en la consola la imagen
-// 3D de un fotograma es la que el juego preparó en el anterior, y así cada vista cae en su pantalla (si no, en
-// la presentación del circuito la vista de arriba salía abajo y al revés). Se fija cuál (indice_fijo) en vez
-// de esperar a que se pinte la nueva: esa espera frenaba al ARM7 y la música en la presentación.
-static volatile int fijo, indice_fijo;
-
-void gx_vblank(const uint8_t *io9) {
-    int captura = (io9[0x67] & 0x80) != 0;
-    if (!captura) fijo = 0;
-    if (!swap_pendiente) return;
-    swap_pendiente = 0;
-    if (!ev_trabajo) arranca_hilos();
-    // Con la captura de pantalla encendida (3D en las dos pantallas: presentación del circuito, ceremonia)
-    // el juego alterna cada fotograma la vista de arriba y la de abajo. Ahí la escena se pinta al momento:
-    // si saliera un fotograma tarde (lo normal, para no frenar el juego) se mezclarían las dos vistas.
-    int al_momento = captura;
-    if (WaitForSingleObject(ev_libre, al_momento ? INFINITE : 0) != WAIT_OBJECT_0) {
-        // aún se está pintando la escena anterior: esta se salta y el juego no espera
-        npolis[lista] = nvisibles[lista] = 0;
-        cont_saltadas++;
-        return;
-    }
-    memcpy(trabajo.io, io9, sizeof trabajo.io);
-    trabajo.wbuf = (swap_param >> 1) & 1;
-    trabajo.vp_x1 = vp_x1; trabajo.vp_y1 = vp_y1; trabajo.vp_x2 = vp_x2; trabajo.vp_y2 = vp_y2;
-    trabajo.lst = lista;
-    lista ^= 1;            // la otra lista se empieza a llenar ya
-    npolis[lista] = nvisibles[lista] = 0;
-    // Con la captura encendida (presentación) el juego alterna las pantallas cada fotograma (POWCNT1 bit 15). Si
-    // alterna de verdad, cada vista se interpola con su escena anterior; con otros usos de la captura, sin intermedias
-    static int bit_antes = -1;
-    int bit = io9[0x305] >> 7;
-    trabajo.doble = al_momento && bit != bit_antes && sub_por_escena > 0;
-    trabajo.pantalla = bit;
-    bit_antes = bit;
-    trabajo.vista = trabajo.doble ? bit : 0;
-    trabajo.interp = !al_momento || trabajo.doble;
-    if (al_momento) {  // la anterior ya está pintada (se esperó arriba): esa es la que se enseña
-        indice_fijo = salida_actual;
-        fijo = 1;
-    }
-    SetEvent(ev_trabajo);
+const uint16_t* gx_color(void)
+{
+  return outputs[gx_indice()].color;
 }
-
-int gx_indice(void) { return fijo ? indice_fijo : salida_actual; }
-const uint16_t *gx_color(void) { return salidas[gx_indice()].color; }
-const uint8_t *gx_alfa(void) { return salidas[gx_indice()].alfa; }
-int gx_polis(void) { return polis_ultima; }
-const uint16_t *gx_hd_color(void) { return salidas[gx_indice()].hd_color; }
-const uint8_t *gx_hd_alfa(void) { return salidas[gx_indice()].hd_alfa; }
-// imágenes intermedias del juego de salidas i (de la escena anterior a esa): cuántas y cada una
-int gx_nsub(int i) { return salidas[i].nsub; }
-const uint16_t *gx_sub_color(int i, int j) { return salidas[i].sub_color[j]; }
-const uint8_t *gx_sub_alfa(int i, int j) { return salidas[i].sub_alfa[j]; }
-// La presentación con 3D en las dos pantallas: juego de salidas de cada vista y su imagen final
-int gx_doble(int i) { return salidas[i].doble; }
-int gx_pantalla(int i) { return salidas[i].pantalla; }
-int gx_anterior(int i) { return (i + NSAL - 1) % NSAL; }
-const uint16_t *gx_fin_color(int i) { return esc > 1 ? salidas[i].hd_color : salidas[i].color; }
-const uint8_t *gx_fin_alfa(int i) { return esc > 1 ? salidas[i].hd_alfa : salidas[i].alfa; }
-uint64_t gx_frames(void) { return cont_frames; }
-
-void gx_depura(void) {
-    fprintf(stderr, "    3D: %d polígonos pintados en la última escena, %llu escenas saltadas por ir lento\n",
-            polis_ultima, (unsigned long long)cont_saltadas);
+const uint8_t* gx_alpha(void)
+{
+  return outputs[gx_indice()].alpha;
+}
+int gx_polys(void)
+{
+  return polys_last;
+}
+const uint16_t* gx_hd_color(void)
+{
+  return outputs[gx_indice()].hd_color;
+}
+const uint8_t* gx_hd_alpha(void)
+{
+  return outputs[gx_indice()].hd_alpha;
+}
+// in-between images of output set i (from the previous scene to that one): how many and each one
+uint64_t gx_frames(void)
+{
+  return cont_frames;
+}
+// scenes that were dropped because the previous one was still being painted
+uint64_t gx_skipped(void)
+{
+  return cont_skipped;
 }

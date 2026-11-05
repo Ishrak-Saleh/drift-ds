@@ -1,30 +1,23 @@
-// Motor 3D de la DS (gpu3d.c)
+// 3D engine of the DS (gpu3d.c)
 #pragma once
 #include <stdint.h>
 
-void gx_inicia(void);
-void gx_escribe(uint32_t a, uint32_t v);   // 0x04000400-0x040005FF: FIFO y puertos de órdenes
-uint32_t gx_lee(uint32_t a);               // 0x04000600-0x040006A3: estado y resultados
-void gx_vblank(const uint8_t *io9);        // si se pidió SWAP_BUFFERS, pinta la escena
+void gx_init(void);
+void gx_write(uint32_t a, uint32_t v); // 0x04000400-0x040005FF: FIFO and command ports
+uint32_t gx_read(uint32_t a); // 0x04000600-0x040006A3: state and results
+void gx_vblank(const uint8_t* io9); // if SWAP_BUFFERS was requested, paints the scene
 
-// Última imagen 3D (256x192): color RGB555 y alfa 0..31 (0 = transparente)
-const uint16_t *gx_color(void);
-const uint8_t *gx_alfa(void);
-// Lo mismo a tamaño grande (256*esc x 192*esc), con el reescalado (video_escala() > 1)
-const uint16_t *gx_hd_color(void);
-const uint8_t *gx_hd_alfa(void);
-// Imágenes intermedias (MKDS_FPS): juego de salidas que se enseña ahora y, de cada juego, cuántas
-// intermedias tiene (de la escena anterior a la suya) y cada una (a tamaño 256*esc x 192*esc)
+// Last 3D image (256x192): RGB555 color and alpha 0..31 (0 = transparent)
+const uint16_t* gx_color(void);
+const uint8_t* gx_alpha(void);
+// The same at big size (256*esc x 192*esc), with the rescale (video_scale() > 1)
+const uint16_t* gx_hd_color(void);
+const uint8_t* gx_hd_alpha(void);
 int gx_indice(void);
-int gx_nsub(int i);
-const uint16_t *gx_sub_color(int i, int j);
-const uint8_t *gx_sub_alfa(int i, int j);
-// 3D en las dos pantallas (la presentación): juego de salidas de cada vista y su imagen final
-int gx_doble(int i);
-int gx_pantalla(int i);
-int gx_anterior(int i);
-const uint16_t *gx_fin_color(int i);
-const uint8_t *gx_fin_alfa(int i);
-uint16_t gx_fondo_con_niebla(uint32_t clear, uint32_t z);
-int gx_polis(void);                        // polígonos de la última escena (para depurar)
+const uint16_t* gx_color_of(int i);
+const uint8_t* gx_alpha_of(int i);
+const uint16_t* gx_hd_color_of(int i);
+const uint8_t* gx_hd_alpha_of(int i);
+int gx_polys(void); // polygons of the last scene (for debugging)
 uint64_t gx_frames(void);
+uint64_t gx_skipped(void); // scenes dropped because the drawing threads were still busy

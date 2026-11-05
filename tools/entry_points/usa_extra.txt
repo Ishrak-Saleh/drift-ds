@@ -1,0 +1,23 @@
+# Extra entry points for the USA ARM9 code that were found by hand. map_region.py never touches
+# this file. Same format as eur.txt. A function reported as missing code in the log goes here.
+# The block below are decomp functions the sweeps never found (checked against the USA symbol table).
+T:020CA6A8
+T:020CA688
+T:020CA69C
+T:020CA83C
+02108E7C
+T:02116B8C
+T:0212B7D8
+0212FF0C
+0212FF40
+02132364
+021323C4
+02133620
+02133630
+02133668
+T:021336D4
+0213377C
+02133790
+0213379C
+0214A348
+T:0215109C

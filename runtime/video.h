@@ -1,31 +1,33 @@
-// Vídeo de la DS: bancos de VRAM, motores 2D y la ventana de Windows.
+// Video of the DS: VRAM banks, 2D engines and the Windows window.
 #pragma once
 #include <stdint.h>
 
-extern uint8_t g_paleta[0x800], g_oam[0x800];
+extern uint8_t g_palette[0x800], g_oam[0x800];
 
-// VRAM vista por el ARM9 (0x06000000-0x06FFFFFF); NULL si no hay banco ahí
-uint8_t *vram_ptr9(uint32_t a);
-void video_vramcnt(int banco, uint8_t v);  // banco 0..8 = A..I
+// VRAM as seen by the ARM9 (0x06000000-0x06FFFFFF). NULL if there is no bank there
+uint8_t* vram_ptr9(uint32_t a);
+void video_vramcnt(int bank, uint8_t v); // bank 0..8 = A..I
 
-// Dibuja las dos pantallas con el estado actual de los registros del ARM9
-// (io9 = los registros 0x04000000-0x0400FFFF). Deja 256x192 píxeles RGB en cada una.
-void video_dibuja(const uint8_t *io9, uint32_t *arriba, uint32_t *abajo);
-// Lo mismo en otro hilo: hace una foto de la VRAM, las paletas y los registros y la monta y la enseña
-// (ventana_muestra) desde allí. Si el hilo aún va por la anterior, esta imagen se salta.
-void video_dibuja_aparte(const uint8_t *io9);
-void video_espera_montaje(void);  // antes de montar en este hilo: que el otro haya terminado
+// Draws the two screens with the current state of the ARM9 registers
+//(io9 = registers 0x04000000-0x0400FFFF). Leaves 256x192 RGB pixels on each.
+void video_draw(const uint8_t* io9, uint32_t* up, uint32_t* bottom);
+// The same on another thread: takes a snapshot of VRAM, palettes and registers, and builds and
+// shows the image (window_show) from there. If the thread is still on the previous one, this image
+// is skipped.
+void video_draw_separate(const uint8_t* io9);
+void video_wait_assembly(void); // before building on this thread: the other one must have finished
 
-// Ventana
-void ventana_inicia(void);
-void ventana_muestra(const uint32_t *arriba, const uint32_t *abajo);
-void ventana_muestra_en(const uint32_t *arriba, const uint32_t *abajo, int64_t ts);  // ts: cuándo (0 = ya)
-uint32_t *ventana_reserva_intermedia(void);      // imágenes intermedias (MKDS_FPS)
-void ventana_publica_intermedia(int64_t ts);
-int64_t ventana_reloj(void);                     // QueryPerformanceCounter
-void ventana_mensajes(void);
+// Window
+void window_init(void);
+void window_show(const uint32_t* up, const uint32_t* bottom);
+void window_show_en(const uint32_t* up, const uint32_t* bottom, int64_t ts); // ts: when (0 = now)
+int64_t window_clock(void); // QueryPerformanceCounter
+void window_messages(void);
 
-// Entrada: teclas de la DS (activas a 0, como el hardware) y lápiz
-extern volatile uint16_t g_keyinput;   // A B Select Start Der Izq Arr Abj R L
-extern volatile uint16_t g_keyxy;      // bit 0 X, bit 1 Y (0 = pulsado)
-extern volatile int g_lapiz, g_lapiz_x, g_lapiz_y;
+// Input: DS keys (active at 0, as the hardware) and stylus
+extern volatile uint16_t g_keyinput; // A B Select Start Right Left Up Down R L
+extern volatile uint16_t g_keyxy; // bit 0 X, bit 1 Y (0 = pressed)
+extern volatile int g_stylus, g_stylus_x, g_stylus_y;
+
+// 3D render scale chosen in settings.ini (1 = DS size, up to 4)
+int video_scale(void);

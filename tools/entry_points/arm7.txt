@@ -1,0 +1,2 @@
+# Extra entry points for the ARM7 code (the same in both regions).
+03806CC0
