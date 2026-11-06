@@ -76,6 +76,9 @@ int main(void)
   CHECK(log_level() == 2);
   log_msg("rom", "AMCE (USA), %d KB", 16384);
 
+  // the window mode is set once at start-up and then rides on every perf line
+  log_set_mode("fullscreen");
+
   // one healthy second: 60 frames, 60 scenes of about 3 ms
   for (int i = 0; i < 60; i++)
   {
@@ -87,15 +90,27 @@ int main(void)
   }
   log_second(60, 60);
 
-  // a bad second: one slow frame, one slow scene, one slow present, a slow save, few pictures shown
+  // start-up is quiet: a slow present and few pictures shown give no slow line and no hint
+  log_note_present(ms_to_ticks(55.0));
+  log_second(60, 30);
+
+  // after the quiet time: one slow frame, one slow scene, one slow present, a slow save, few
+  // pictures shown
+  log_quiet(0.0);
   log_note_game_frame();
   Sleep(40);
   log_note_game_frame();
   log_note_scene(ms_to_ticks(35.0), 2100);
-  log_note_present(ms_to_ticks(55.0));
+  log_note_present(ms_to_ticks(57.0));
   log_note_save(ms_to_ticks(30.0), 1);
   log_note_save(ms_to_ticks(2.0), 0);
   fake_skipped += 3;
+  log_second(60, 30);
+
+  // a fullscreen switch is quiet too, for one second. The new mode name shows on the next perf line
+  log_set_mode("borderless fullscreen");
+  log_quiet(1.0);
+  log_note_present(ms_to_ticks(59.0));
   log_second(60, 30);
 
   // a crash report goes into the same file, after the lines before it
@@ -114,8 +129,13 @@ int main(void)
   CHECK(log_contains("logical cores")); // machine details from sysinfo.c
   CHECK(log_contains("load    cpu"));
   CHECK(log_contains("log cost"));
-  CHECK(log_contains("showing pictures is slow"));
+  CHECK(log_contains("showing pictures is slow")); // from the second after the quiet time
+  CHECK(log_contains("took 57.0 ms"));
+  CHECK(!log_contains("took 55.0 ms")); // start-up
+  CHECK(!log_contains("took 59.0 ms")); // fullscreen switch
   CHECK(log_contains("3D scene took 35.0 ms"));
+  CHECK(log_contains("show 8.0 | mode fullscreen")); // the healthy second, first mode
+  CHECK(log_contains("show 59.0 | mode borderless fullscreen")); // the last second, new mode
   CHECK(log_contains("==== CRASH"));
   CHECK(log_contains("test crash"));
   CHECK(log_contains("DEADBEEF"));

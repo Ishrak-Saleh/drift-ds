@@ -33,6 +33,17 @@ void log_note_scene(int64_t qpc_ticks, int polys); // 3D thread: how long a scen
 void log_note_present(int64_t qpc_ticks); // paint thread: how long showing a picture took
 void log_note_save(int64_t qpc_ticks, int ok); // game thread: how long writing a save took
 
+// Silences the slow-picture lines and all hints for this many seconds (0 ends it at once). The log
+// does it by itself for the first 5 seconds. The window calls it before a fullscreen switch,
+// because showing a picture is slow then and that is normal.
+void log_quiet(double seconds);
+
+// Tells the log how the window is shown right now ("windowed", "fullscreen", "borderless
+// fullscreen"). The window calls it at start-up and after every switch. Every per-second perf line
+// then ends with "| mode <name>", so a slow second can be tied to the mode without searching for
+// the switch line. Safe from any thread. Until it is called, the column is left out.
+void log_set_mode(const char* name);
+
 // Once per second from the game thread: prints the performance lines and the hint, if any.
 // shown_pictures = different pictures the window showed in that second.
 void log_second(int game_fps, int shown_pictures);

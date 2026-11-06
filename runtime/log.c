@@ -20,6 +20,7 @@
 #define SLOW_PRESENT_US 40000
 #define SLOW_SAVE_US 15000
 #define SLOW_LINES_PER_SECOND 6
+#define QUIET_START_SECONDS 5.0 // no slow-picture reports while the program starts
 #define KEEP_LOG_FILES 10
 
 static char ring[RING_LINES][LINE_LEN];
@@ -37,6 +38,8 @@ static int log_open_tried;
 static volatile LONG frame_gap_max_us, scene_max_us, present_max_us;
 static volatile LONG scene_count, scene_sum_us, scene_polys;
 static volatile LONG slow_budget = SLOW_LINES_PER_SECOND;
+static volatile LONG64 quiet_until_ticks; // slow-picture lines and hints stay silent until then
+static char mode_name[32]; // how the window is shown, for the perf line. Guarded by ring_lock
 static int64_t last_frame_ticks; // game thread only
 static volatile LONG64 cost_ticks; // time the game's own threads spend inside the log code
 static volatile LONG64
@@ -77,6 +80,29 @@ static void raise_max(volatile LONG* slot, LONG value)
 static int take_slow_slot(void)
 {
   return level > 0 && InterlockedDecrement(&slow_budget) >= 0;
+}
+
+// True during start-up and right after a fullscreen switch: showing a picture is slow then, and
+// that is normal, so it must not be reported as a problem.
+static int in_quiet(void)
+{
+  return now_ticks() < quiet_until_ticks;
+}
+
+void log_quiet(double seconds)
+{
+  if (!ready)
+    return;
+  InterlockedExchange64(&quiet_until_ticks, now_ticks() + (int64_t)(seconds * (double)qpc_freq));
+}
+
+void log_set_mode(const char* name)
+{
+  if (!ready)
+    return;
+  EnterCriticalSection(&ring_lock);
+  snprintf(mode_name, sizeof mode_name, "%s", name ? name : "");
+  LeaveCriticalSection(&ring_lock);
 }
 
 int log_level(void)
@@ -246,6 +272,7 @@ void log_init(void)
   ring_event = CreateEventW(NULL, FALSE, FALSE, NULL);
   log_file();
   ready = 1;
+  log_quiet(QUIET_START_SECONDS);
 
   // Clicking in a console window starts "quick edit" selection, which freezes every program that
   // writes to it. Turn it off so a stray click cannot stop the game.
@@ -317,7 +344,7 @@ void log_note_present(int64_t ticks)
   int64_t started = now_ticks();
   LONG us = ticks_to_us(ticks);
   raise_max(&present_max_us, us);
-  if (us > SLOW_PRESENT_US && take_slow_slot())
+  if (us > SLOW_PRESENT_US && !in_quiet() && take_slow_slot())
     log_msg("slow", "showing a picture took %.1f ms (display or graphics driver)", us / 1000.0);
   add_cost(started);
 }
@@ -383,7 +410,9 @@ void log_second(int game_fps, int shown_pictures)
 
   // a short reason when the numbers are off: the thing to look at first
   const char* hint = "";
-  if (game_fps < 55)
+  if (in_quiet())
+    hint = ""; // start-up and window changes are not gameplay
+  else if (game_fps < 55)
     hint = "game is running slow";
   else if (shown_pictures < game_fps * 8 / 10)
   {
@@ -405,7 +434,8 @@ void log_second(int game_fps, int shown_pictures)
     log_msg("perf",
             "frame (ms), show = longest time to show a picture (ms). load line: cpu = cores");
     log_msg("perf", "this game uses, pc = how busy the whole PC is, log cost = time spent logging "
-                    "in that second");
+                    "in that second,");
+    log_msg("perf", "mode = how the window is shown (windowed, fullscreen, borderless fullscreen)");
   }
   char cpu_text[24] = "n/a", pc_text[16] = "n/a";
   if (game_cores >= 0.0)
@@ -414,11 +444,16 @@ void log_second(int game_fps, int shown_pictures)
     snprintf(pc_text, sizeof pc_text, "%d%%", pc_cpu);
   double log_ms = (double)InterlockedExchange64(&cost_ticks, 0) * 1000.0 / (double)qpc_freq;
   double writer_ms = (double)InterlockedExchange64(&writer_ticks, 0) * 1000.0 / (double)qpc_freq;
+  char mode_text[48] = "";
+  EnterCriticalSection(&ring_lock);
+  if (*mode_name)
+    snprintf(mode_text, sizeof mode_text, " | mode %s", mode_name);
+  LeaveCriticalSection(&ring_lock);
   add_cost(started); // the work above; the lines below count themselves
   log_msg("perf",
-          "fps %2d | 3D %2d skip %d | screen %2d | scene %.1f/%.1f | frame %.1f | show %.1f",
+          "fps %2d | 3D %2d skip %d | screen %2d | scene %.1f/%.1f | frame %.1f | show %.1f%s",
           game_fps, scenes, skipped, shown_pictures, n ? sum / 1000.0 / n : 0.0, scene_max / 1000.0,
-          frame_max / 1000.0, present_max / 1000.0);
+          frame_max / 1000.0, present_max / 1000.0, mode_text);
   log_msg("load", "cpu %s | pc %s | log cost: game threads %.2f ms/s, writer thread %.2f ms/s",
           cpu_text, pc_text, log_ms, writer_ms);
   if (*hint)

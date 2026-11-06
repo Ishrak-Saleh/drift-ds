@@ -4,6 +4,7 @@
 #include "compat.h" // before cpu.h: its R macro clashes with windows.h
 #include "ds.h"
 #include "region.h"
+#include "inifile.h"
 #include "log.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -191,6 +192,7 @@ void name_per_frame(void)
 
 // settings.ini (written by the launcher): lines KEY=value that become the usual variables
 //(SCALE -> DRIFT_SCALE, FULLSCREEN -> DRIFT_FULLSCREEN, NAME -> DRIFT_NAME).
+// A line that starts with # is a comment, and so is the end of a line after " #" (see inifile.h).
 // What is already set in the environment wins.
 static void read_settings(void)
 {
@@ -207,6 +209,7 @@ static void read_settings(void)
     *same = 0;
     char var[64];
     snprintf(var, sizeof var, "DRIFT_%s", line);
+    ini_clean_value(same + 1); // a note after the value (" # ...") is not part of it
     if (!getenv(var))
       _putenv_s(var, same + 1);
   }
@@ -313,11 +316,42 @@ static void go_to_game_folder(void)
   SetCurrentDirectoryW(file_path);
 }
 
+// NO_POWER_THROTTLE=1 in settings.ini: tell Windows not to slow this program down on its own.
+// Windows can move a program to slow power-saving cores ("efficiency mode") and, since Windows 11,
+// can ignore the 1 ms timer the game asks for. Both can cause short pauses. Only this process is
+// affected, no admin rights are needed, and it ends when the game closes. Default 0: do nothing.
+static void apply_power_setting(void)
+{
+  const char* want = getenv("DRIFT_NO_POWER_THROTTLE");
+  if (!want || atoi(want) != 1)
+  {
+    log_msg("power", "power throttling left to Windows");
+    return;
+  }
+  PROCESS_POWER_THROTTLING_STATE state = {0};
+  state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+  state.ControlMask =
+      PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+  state.StateMask = 0; // control these two, and ask for them to be off
+  // looked up at run time: the build targets an older Windows version, and an older Windows
+  // without this call then just gets the error line below
+  typedef BOOL(WINAPI * SetProcessInformationFn)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
+  SetProcessInformationFn set_info = (SetProcessInformationFn)(void*)GetProcAddress(
+      GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation");
+  if (!set_info)
+    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+  if (set_info && set_info(GetCurrentProcess(), ProcessPowerThrottling, &state, sizeof state))
+    log_msg("power", "power throttling switched off for this program");
+  else
+    log_msg("power", "could not switch off power throttling (error %lu)", GetLastError());
+}
+
 static int boot(void)
 {
   go_to_game_folder();
   read_settings();
   log_init();
+  apply_power_setting();
   size_t n;
   FILE* has = fopen("rom/game.nds", "rb");
   if (!has)

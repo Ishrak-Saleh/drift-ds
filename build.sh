@@ -1,12 +1,12 @@
 #!/bin/sh
-#Builds DriftDS from your own ROM: extract, translate to C, compile, link.
-#Where it fits: this is the single entry point for building. Run it in Git Bash from any folder.
-#Why: the game code is translated from the ROM on your machine, so no game data is in the repository.
+#builds DriftDS from your own ROM: extract, translate to C, compile, link.
+#where it fits: this is the single entry point for building. run it in Git Bash from any folder.
+#why: the game code is translated from the ROM on your machine, so no game data is in the repository.
 #
 #Usage:  sh build.sh [all|extract|translate|compile|link|clean]
 #Needs:  rom/game.nds (a Mario Kart DS ROM, USA or Europe), Python 3, and clang for Windows (llvm-mingw).
 #Setup:  JOBS=n sets the compile parallelism (default: all cores but one). CLANG and PYTHON override the tools.
-#Output: build/driftds.exe. Put settings.ini next to the folder that holds rom/ if you want to change settings.
+#Output: build/driftds.exe. put settings.ini next to the folder that holds rom/ if you want to change settings.
 set -e
 cd "$(dirname "$0")"
 
@@ -77,7 +77,7 @@ step_compile() {
     done
     total=$(wc -l < build/compile_jobs.txt)
     echo "compile: $total files, $JOBS at a time"
-    [ "$total" -eq 0 ] && return
+    [ "$total" -eq 0 ] && { rm -f build/compile_jobs.txt; return; }
     #each job line is: source object folder-name
     xargs -P "$JOBS" -L 1 sh -c '
         src=$1; obj=$2; name=$3
@@ -89,6 +89,7 @@ step_compile() {
         else
             echo "ERROR $src (see $obj.err)"
         fi' sh < build/compile_jobs.txt
+    rm -f build/compile_jobs.txt  #only a work list for the line above, no need to keep it
     failed=$(find "$OBJ_GEN" "$OBJ_RT" -name '*.err' | wc -l)
     [ "$failed" -eq 0 ] || { echo "compile: $failed files failed"; exit 1; }
 }
@@ -99,6 +100,7 @@ step_link() {
     "$CLANG" -O2 -w @build/link_list.txt \
         -lwinmm -lgdi32 -lopengl32 -luser32 -lxinput \
         -Wl,--stack,268435456 -o build/driftds.new.exe
+    rm -f build/link_list.txt  #only a work list for the link above, no need to keep it
     if mv -f build/driftds.new.exe "$EXE" 2>/dev/null; then
         echo "built: $EXE"
     else
