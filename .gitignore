@@ -41,3 +41,6 @@ launcher/
 #editor folders
 .vscode/
 .idea/
+
+#recorded 3D scenes (hold game data)
+scenes/

@@ -7,8 +7,15 @@
 // Floating point is used (the DS uses fixed point): small differences of
 // rounding, but much simpler.
 #include "gpu3d.h"
+#include "glctx.h"
+#include "glload.h"
+#include "gpu3d_types.h"
+#include "gpuraster.h"
 #include "log.h"
+#include "scenedump.h"
+#include "texdecode.h"
 #include <math.h>
+#include <time.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -18,7 +25,9 @@ extern uint8_t *g_tex[4], *g_texpal[6];
 // video.c clears and refills g_tex and g_texpal every time the game remaps a VRAM bank, and the
 // drawing thread reading them in that gap got NULL, which came out as black pixels coming and going
 // on models in menus
-static uint8_t *snap_tex[4], *snap_pal[6];
+static TexMem snap;
+static GpuRaster* gpu; // the GPU drawing, made and used by the drawing thread only
+static int npp; // polygons drawn in the last scene
 // and a private copy of the CONTENT of the mapped texture and palette memory (about 600 KB, a few
 // tenths of a ms): the game keeps rewriting textures and palettes (the emblem, animated models)
 // while the drawing thread reads them, which gave torn or black pixels. The real DS draws a scene
@@ -46,24 +55,7 @@ static float light_dir[4][3], light_col[4][3];
 static uint8_t brightness_table[128];
 static int vp_x1, vp_y1 = 0, vp_x2 = 255, vp_y2 = 191;
 
-//---- polygon list ----
-typedef struct
-{
-  float x, y, z, w; // clip coordinates
-  float r, g, b; // color 0..31
-  float s, t; // texels
-} Vert;
-
-#define MAX_VERT_POLY 10
-typedef struct
-{
-  Vert v[MAX_VERT_POLY];
-  int n; // vertices after clipping (0 if outside the view)
-  uint32_t attr, teximage, pltt;
-  int translucent;
-} Poly;
-
-#define MAX_POLYS 4096
+//---- polygon list (types in gpu3d_types.h) ----
 static Poly polys[2][MAX_POLYS];
 static int npolis[2], list; // list = the one being filled (with those that fall outside the view)
 static int nvisible[2]; // the ones seen (what the console counts)
@@ -780,228 +772,29 @@ uint32_t gx_read(uint32_t a)
   return 0;
 }
 
+static void start_threads(void);
+
 void gx_init(void)
 {
   identity(proj);
   identity(pos);
   identity(vec);
   identity(tex);
+  // the graphics card check happens at the launch: a PC without OpenGL 4.5 gets its message now,
+  // not at the first 3D scene
+  start_threads();
 }
 
-// Fast and in parallel:
-//- Each triangle is prepared once (equations of its edges and of its
-// attributes) and walked adding increments, row by row, only inside.
-//- The screen is split into NBANDAS bands of rows, each in its thread:
-// each band paints all the polygons in order, so the result is
-// the same as painting one by one.
+// Drawing is done on the graphics card (gpuraster.c, OpenGL 4.5):
+//- The geometry above builds the polygon list; the drawing thread hands it to gpuraster_draw, which
+// returns the colour and alpha pictures (the CPU rasterizer that was here is in git history, in
+// commit 73a07ea).
 //- Everything happens in a separate thread while the game prepares the next
 // scene. If the game finishes another scene before the previous one
 // ends, that one is skipped (better to lose a frame than slow the game).
+//- The thread owns an OpenGL context on a hidden window. If the PC cannot give one, the game
+// says so in a message box and a log line, and closes (there is no CPU fallback).
 #include "compat.h"
-
-static inline uint8_t tex8(uint32_t o)
-{
-  uint8_t* p = snap_tex[(o >> 17) & 3];
-  if (!p)
-    return 0;
-  return p[o & 0x1FFFF];
-}
-static inline uint16_t pal16(uint32_t o)
-{
-  o %= 0x18000; // 96 KB (6 slots of 16 KB). Careful: 0x17FFF does NOT work as a mask (it clears bit
-                // 15)
-  uint8_t* p = snap_pal[o >> 14];
-  if (!p)
-    return 0;
-  return (uint16_t)(p[o & 0x3FFF] | p[(o & 0x3FFF) + 1] << 8);
-}
-
-static inline uint16_t media15(uint16_t c0, uint16_t c1, int p0, int p1, int div)
-{
-  return (uint16_t)((((c0 & 31) * p0 + (c1 & 31) * p1) / div) |
-                    ((((c0 >> 5) & 31) * p0 + ((c1 >> 5) & 31) * p1) / div) << 5 |
-                    ((((c0 >> 10) & 31) * p0 + ((c1 >> 10) & 31) * p1) / div) << 10);
-}
-
-// Color of a texel (RGB555) and its alpha 0..31
-static uint16_t texel(uint32_t ti, uint32_t pltt, int s, int t, int* alpha)
-{
-  int w = 8 << ((ti >> 20) & 7), h = 8 << ((ti >> 23) & 7);
-  if ((ti >> 16) & 1)
-  { // repetir S
-    if ((ti >> 18) & 1)
-    {
-      int per = s & (2 * w - 1);
-      s = per >= w ? 2 * w - 1 - per : per;
-    }
-    else
-      s &= w - 1;
-  }
-  else
-    s = s < 0 ? 0 : s >= w ? w - 1 : s;
-  if ((ti >> 17) & 1)
-  {
-    if ((ti >> 19) & 1)
-    {
-      int per = t & (2 * h - 1);
-      t = per >= h ? 2 * h - 1 - per : per;
-    }
-    else
-      t &= h - 1;
-  }
-  else
-    t = t < 0 ? 0 : t >= h ? h - 1 : t;
-  uint32_t base = (ti & 0xFFFF) * 8;
-  int fmt = (ti >> 26) & 7;
-  int trans0 = (ti >> 29) & 1;
-  uint32_t pb = pltt * 16, i;
-  *alpha = 31;
-  switch (fmt)
-  {
-  case 1:
-  { // A3I5
-    uint8_t b = tex8(base + (uint32_t)(t * w + s));
-    int a = b >> 5;
-    *alpha = a * 4 + a / 2;
-    return pal16(pb + (b & 31) * 2);
-  }
-  case 2: // 4 colores
-    i = (tex8(base + (uint32_t)((t * w + s) / 4)) >> ((s & 3) * 2)) & 3;
-    if (trans0 && i == 0)
-      *alpha = 0;
-    return pal16(pltt * 8 + i * 2);
-  case 3: // 16 colores
-    i = (tex8(base + (uint32_t)((t * w + s) / 2)) >> ((s & 1) * 4)) & 15;
-    if (trans0 && i == 0)
-      *alpha = 0;
-    return pal16(pb + i * 2);
-  case 4: // 256 colores
-    i = tex8(base + (uint32_t)(t * w + s));
-    if (trans0 && i == 0)
-      *alpha = 0;
-    return pal16(pb + i * 2);
-  case 5:
-  { // compressed in 4x4 blocks
-    uint32_t raw_data = base + (uint32_t)((t / 4) * (w / 4) + s / 4) * 4;
-    int idx = (tex8(raw_data + (uint32_t)(t & 3)) >> ((s & 3) * 2)) & 3;
-    uint32_t slot =
-        (raw_data & 0x7FFFF) >= 0x40000 ? 0x10000 : 0; // data in slot 2: indices in slot 1 + 64 KB
-    uint32_t info_dir = 0x20000 + slot + ((raw_data & 0x1FFFF) >> 1);
-    uint16_t info = (uint16_t)(tex8(info_dir) | tex8(info_dir + 1) << 8);
-    uint32_t pdir = pb + (uint32_t)(info & 0x3FFF) * 4;
-    int mode = info >> 14;
-    switch (idx)
-    {
-    case 0:
-      return pal16(pdir);
-    case 1:
-      return pal16(pdir + 2);
-    case 2:
-      if (mode == 0 || mode == 2)
-        return pal16(pdir + 4);
-      if (mode == 1)
-        return media15(pal16(pdir), pal16(pdir + 2), 1, 1, 2);
-      return media15(pal16(pdir), pal16(pdir + 2), 5, 3, 8);
-    default:
-      if (mode == 2)
-        return pal16(pdir + 6);
-      if (mode == 3)
-        return media15(pal16(pdir), pal16(pdir + 2), 3, 5, 8);
-      *alpha = 0;
-      return 0;
-    }
-  }
-  case 6:
-  { // A5I3
-    uint8_t b = tex8(base + (uint32_t)(t * w + s));
-    *alpha = b >> 3;
-    return pal16(pb + (b & 7) * 2);
-  }
-  case 7:
-  { // color directo
-    uint32_t o = base + (uint32_t)(t * w + s) * 2;
-    uint16_t c = (uint16_t)(tex8(o) | tex8(o + 1) << 8);
-    if (!(c & 0x8000))
-      *alpha = 0;
-    return c & 0x7FFF;
-  }
-  }
-  return 0x7FFF;
-}
-
-// texture cache: every texel is decoded by texel() at most once per scene, then read back by every
-// pixel, band and in-between image of that scene. one 32 bit word per texel: epoch(12) alpha(5)
-// color(15), so a band thread writes it in one store and a stale entry (old epoch) just gets
-// decoded again. nothing is kept between scenes, so a texture the game rewrites is picked up
-// exactly as before
-typedef struct
-{
-  uint32_t ti, pltt;
-  int w, h;
-  uint32_t* px;
-} TexC;
-#define MAX_TEXC 512
-#define MAX_TEXC_BYTES (96u * 1024 * 1024)
-static TexC texc[MAX_TEXC];
-static int ntexc;
-static size_t texc_bytes;
-static volatile uint32_t epoch = 1; // 1..4095, 0 is the empty (never decoded) value
-
-static void texc_empty(void)
-{
-  for (int i = 0; i < ntexc; i++)
-    free(texc[i].px);
-  ntexc = 0;
-  texc_bytes = 0;
-}
-
-// start of a real scene (sub-frames share it): new epoch, and a flush when the counter wraps or
-// memory is high
-static void texc_scene(void)
-{
-  epoch = epoch % 4095 + 1;
-  if (epoch == 1 || texc_bytes > MAX_TEXC_BYTES / 2)
-    texc_empty();
-}
-
-// cache slot of a texture, NULL when there is no room (the pixel then uses texel() directly)
-static TexC* texc_search(uint32_t ti, uint32_t pltt)
-{
-  static int last;
-  if (last < ntexc && texc[last].ti == ti && texc[last].pltt == pltt)
-    return &texc[last];
-  for (int i = 0; i < ntexc; i++)
-    if (texc[i].ti == ti && texc[i].pltt == pltt)
-    {
-      last = i;
-      return &texc[i];
-    }
-  int w = 8 << ((ti >> 20) & 7), h = 8 << ((ti >> 23) & 7);
-  size_t bytes = (size_t)w * h * 4;
-  if (ntexc >= MAX_TEXC || texc_bytes + bytes > MAX_TEXC_BYTES)
-    return NULL;
-  uint32_t* px = calloc((size_t)w * h, 4);
-  if (!px)
-    return NULL;
-  texc[ntexc] = (TexC){ti, pltt, w, h, px};
-  texc_bytes += bytes;
-  last = ntexc;
-  return &texc[ntexc++];
-}
-
-typedef struct
-{
-  float x, y, z, iw, r, g, b, s, t;
-} VP; // vertex on screen (attributes / w)
-
-typedef struct
-{ // polygon ready to paint
-  VP v[MAX_VERT_POLY];
-  int n;
-  uint32_t teximage, pltt;
-  uint8_t mode, alpha, id, textures, depth_same, act_depth_trans, translucent;
-  TexC* tc; // texture cache slot, NULL = decode with texel() per pixel
-} PP;
 
 typedef struct
 { // what the painting thread needs (copied at the start of the scene)
@@ -1009,8 +802,6 @@ typedef struct
   int wbuf, vp_x1, vp_y1, vp_x2, vp_y2, lst;
 } Job;
 
-static PP pp[MAX_POLYS];
-static int npp;
 static Job job;
 
 // Rescale: the 3D is painted at esc times the DS resolution (DRIFT_SCALE, 1-4). output_* is at DS
@@ -1019,8 +810,6 @@ static Job job;
 static int esc = 1, AN = 256, AT = 192;
 static uint16_t color_buf[MAXP]; // RGB555
 static uint8_t alpha_buf[MAXP]; // 0..31 (0 = nada)
-static uint32_t depth_buf[MAXP];
-static uint8_t id_buf[MAXP];
 // What was painted: a ring of 3 sets. The painting thread writes the one after the current. The
 // image build (another thread) uses the one it gets for a frame, without it being overwritten.
 typedef struct
@@ -1034,461 +823,112 @@ static Output outputs[3];
 static volatile int output_current, polys_last;
 static volatile uint64_t cont_frames, cont_skipped;
 
-// Turns the polygons of the list into screen coordinates and drops those not seen
+// Scene dump (SCENE_DUMP=n in settings.ini, or DRIFT_SCENE_DUMP): saves n scenes, one about every
+// second, to scenes/. Each file has the registers, polygons, textures and palettes of the scene and
+// the picture this drawing made from them (scenedump.h). It is a developer tool for the GPU work:
+// the files hold game data and stay out of git. Writing slows the drawing thread, so scenes may be
+// skipped while it runs.
+#define DUMP_EVERY 60
+#define DUMP_EVERY_CAPTURE 10
+static int dump_left, dump_count;
+static char dump_stamp[24];
 
-static void prepare(const Job* tj, const Poly* lst, int n)
+static void dump_init(void)
 {
-  uint16_t disp3d = (uint16_t)(tj->io[0x60] | tj->io[0x61] << 8);
-  float vw = (float)(tj->vp_x2 - tj->vp_x1 + 1), vh = (float)(tj->vp_y2 - tj->vp_y1 + 1);
-  npp = 0;
-  for (int k = 0; k < n; k++)
-  {
-    const Poly* p = &lst[k];
-    if (p->n < 3)
-      continue; // outside the view
-    int alpha = (p->attr >> 16) & 31, mode = (p->attr >> 4) & 3;
-    if (alpha == 0 || mode == 3)
-      continue; // wireframe and shadows: not painted for now
-    PP* q = &pp[npp];
-    float area = 0;
-    for (int i = 0; i < p->n; i++)
-    {
-      const Vert* a = &p->v[i];
-      float w = a->w == 0 ? 1e-6f : a->w, iw = 1.0f / w;
-      VP* v = &q->v[i];
-      v->x = ((a->x * iw + 1) * vw / 2 + (float)tj->vp_x1) * (float)esc;
-      v->y = ((1 - a->y * iw) * vh / 2 + (float)(191 - tj->vp_y2)) * (float)esc;
-      // DRIFT_SNAP=1: round screen positions to whole pixels of the drawing grid, as the DS does
-      // (its rasterizer has no sub-pixel positions), so textures do not slide by tiny amounts while
-      // a model moves
-      v->z = tj->wbuf ? w : (a->z * iw + 1) / 2;
-      v->iw = iw;
-      v->r = a->r * iw;
-      v->g = a->g * iw;
-      v->b = a->b * iw;
-      v->s = a->s * iw;
-      v->t = a->t * iw;
-    }
-    for (int i = 0; i < p->n; i++)
-    {
-      const VP *a = &q->v[i], *b = &q->v[(i + 1) % p->n];
-      area += a->x * b->y - b->x * a->y;
-    }
-    int front = area < 0;
-    if (front && !((p->attr >> 7) & 1))
-      continue;
-    if (!front && !((p->attr >> 6) & 1))
-      continue;
-    int fmt = (p->teximage >> 26) & 7;
-    q->n = p->n;
-    q->teximage = p->teximage;
-    q->pltt = p->pltt;
-    q->mode = (uint8_t)mode;
-    q->alpha = (uint8_t)alpha;
-    q->id = (uint8_t)((p->attr >> 24) & 63);
-    q->textures = (disp3d & 1) && fmt != 0;
-    q->tc = q->textures ? texc_search(p->teximage, p->pltt) : NULL;
-    q->depth_same = (p->attr >> 14) & 1;
-    q->act_depth_trans = (p->attr >> 11) & 1;
-    q->translucent = (uint8_t)p->translucent;
-    npp++;
-  }
-}
-
-// triangle setup, computed once per image (not once per band): bands only clip the row range and
-// draw
-typedef struct
-{
-  const PP* p;
-  float id, k0, k0x, k0y, k1, k1x, k1y, l0x, l1x;
-  float zA, zB, zC, iwA, iwB, iwC, rA, rB, rC, gA, gB, gC, bA, bB, bC, sA, sB, sC, tA, tB, tC;
-  int y0, y1, xa, xb; // bounding box on screen, x already clipped to the image
-} Tri;
-#define MAX_TRIS (MAX_POLYS * 8)
-static Tri tris[MAX_TRIS];
-static int ntris, ntris_op; // tris[0..ntris_op) are opaque, the rest translucent
-
-static void tri_prepare(const PP* p, const VP* A, const VP* B, const VP* C)
-{
-  if (ntris >= MAX_TRIS)
+  const char* v = getenv("DRIFT_SCENE_DUMP");
+  dump_left = v ? atoi(v) : 0;
+  if (dump_left < 0)
+    dump_left = 0;
+  if (dump_left > 500)
+    dump_left = 500;
+  if (!dump_left)
     return;
-  float d = (B->x - A->x) * (C->y - A->y) - (C->x - A->x) * (B->y - A->y);
-  if (fabsf(d) < 1e-6f)
+  time_t now = time(NULL);
+  struct tm* lt = localtime(&now);
+  if (lt)
+    strftime(dump_stamp, sizeof dump_stamp, "%Y%m%d-%H%M%S", lt);
+  else
+    snprintf(dump_stamp, sizeof dump_stamp, "scene");
+  CreateDirectoryA("scenes", NULL);
+  log_msg("3D",
+          "scene dump on: %d scenes, one every %d (every %d with the capture on), into scenes/ "
+          "(game data, never commit)",
+          dump_left, DUMP_EVERY, DUMP_EVERY_CAPTURE);
+}
+
+// called by the drawing thread when a scene is painted and before its buffers are reused
+static void dump_scene(const Poly* lst, int n)
+{
+  if (dump_left <= 0)
     return;
-  Tri* T = &tris[ntris];
-  float id = 1.0f / d;
-  int y0 = (int)floorf(fminf(A->y, fminf(B->y, C->y))),
-      y1 = (int)ceilf(fmaxf(A->y, fmaxf(B->y, C->y)));
-  int xa = (int)floorf(fminf(A->x, fminf(B->x, C->x))),
-      xb = (int)ceilf(fmaxf(A->x, fmaxf(B->x, C->x)));
-  if (xa < 0)
-    xa = 0;
-  if (xb > AN - 1)
-    xb = AN - 1;
-  if (y1 < 0 || y0 > AT - 1 || xa > xb)
-    return; // nothing of it lands in the image
-  T->p = p;
-  T->id = id;
-  T->y0 = y0;
-  T->y1 = y1;
-  T->xa = xa;
-  T->xb = xb;
-  // barycentric weights of A and B as linear functions: l = (k + kx*px + ky*py) / d
-  T->k0 = B->x * C->y - C->x * B->y;
-  T->k0x = B->y - C->y;
-  T->k0y = C->x - B->x;
-  T->k1 = C->x * A->y - A->x * C->y;
-  T->k1x = C->y - A->y;
-  T->k1y = A->x - C->x;
-  T->l0x = T->k0x * id;
-  T->l1x = T->k1x * id;
-  // atributo = aC + l0*(aA - aC) + l1*(aB - aC)
-#define DIF(c)                                                                                     \
-  T->c##A = A->c - C->c;                                                                           \
-  T->c##B = B->c - C->c;                                                                           \
-  T->c##C = C->c
-  DIF(z);
-  DIF(iw);
-  DIF(r);
-  DIF(g);
-  DIF(b);
-  DIF(s);
-  DIF(t);
-#undef DIF
-  ntris++;
-}
-
-// triangles of the image, called after prepare(): opaque polygons first, then translucent ones,
-// each in list order
-static void build_tris(void)
-{
-  ntris = 0;
-  for (int pass_num = 0; pass_num < 2; pass_num++)
-  {
-    for (int k = 0; k < npp; k++)
-    {
-      const PP* q = &pp[k];
-      if (q->translucent != pass_num)
-        continue;
-      for (int j = 1; j + 1 < q->n; j++)
-        tri_prepare(q, &q->v[0], &q->v[j], &q->v[j + 1]);
-    }
-    if (!pass_num)
-      ntris_op = ntris;
-  }
-}
-
-static void triangle(const Tri* T, int yb0, int yb1, const Job* tj, int layer_trans)
-{
-  const PP* p = T->p;
-  int y0 = T->y0, y1 = T->y1, xa = T->xa, xb = T->xb;
-  if (y0 < yb0)
-    y0 = yb0;
-  if (y1 > yb1)
-    y1 = yb1;
-  if (y0 > y1)
+  // while the screen capture is on (track presentation, ceremony) scenes are saved more often,
+  // because that is the case the GPU drawing has to get right and it is over in a few seconds
+  int capture = (job.io[0x67] & 0x80) != 0;
+  int every = capture ? DUMP_EVERY_CAPTURE : DUMP_EVERY;
+  if (cont_frames % every != every / 2)
     return;
-  const float id = T->id, k0 = T->k0, k0x = T->k0x, k0y = T->k0y, k1 = T->k1, k1x = T->k1x,
-              k1y = T->k1y;
-  const float l0x = T->l0x, l1x = T->l1x;
-  const float zA = T->zA, zB = T->zB, zC = T->zC, iwA = T->iwA, iwB = T->iwB, iwC = T->iwC;
-  const float rA = T->rA, rB = T->rB, rC = T->rC, gA = T->gA, gB = T->gB, gC = T->gC;
-  const float bA = T->bA, bB = T->bB, bC = T->bC, sA = T->sA, sB = T->sB, sC = T->sC;
-  const float tA = T->tA, tB = T->tB, tC = T->tC;
-  const uint8_t* io = tj->io;
-  uint16_t disp3d = (uint16_t)(io[0x60] | io[0x61] << 8);
-  int test_alpha = (disp3d >> 2) & 1, ref_alpha = io[0x340] & 31, mix_alpha = (disp3d >> 3) & 1;
-  int mode = p->mode, alpha_poly = p->alpha, idp = p->id, va = alpha_poly * 2 + 1;
-  const int wbuf = tj->wbuf;
-  TexC* const tc = p->tc;
-  const uint32_t ep = epoch;
-  int tw = 0, th = 0, rep_s = 0, flip_s = 0, rep_t = 0, flip_t = 0;
-  if (tc)
-  { // wrap flags of the texture, once per triangle
-    uint32_t ti = p->teximage;
-    tw = tc->w;
-    th = tc->h;
-    rep_s = (ti >> 16) & 1;
-    rep_t = (ti >> 17) & 1;
-    flip_s = (ti >> 18) & 1;
-    flip_t = (ti >> 19) & 1;
-  }
-  const float eps = -1e-4f;
-  for (int y = y0; y <= y1; y++)
-  {
-    float py = (float)y + 0.5f;
-    float px0 = (float)xa + 0.5f;
-    float l0 = (k0 + k0x * px0 + k0y * py) * id, l1 = (k1 + k1x * px0 + k1y * py) * id;
-    // stretch of the row inside the triangle: l0, l1 and l2 = 1 - l0 - l1 >= 0
-    float lo = 0, hi = (float)(xb - xa);
-    float base[3] = {l0, l1, 1 - l0 - l1}, step[3] = {l0x, l1x, -l0x - l1x};
-    int outside = 0;
-    for (int e = 0; e < 3; e++)
-    {
-      if (step[e] > 0)
-      {
-        float c = (eps - base[e]) / step[e];
-        if (c > lo)
-          lo = c;
-      }
-      else if (step[e] < 0)
-      {
-        float c = (eps - base[e]) / step[e];
-        if (c < hi)
-          hi = c;
-      }
-      else if (base[e] < eps)
-        outside = 1;
-    }
-    if (outside || lo > hi)
-      continue;
-    int xi = xa + (int)ceilf(lo), xf = xa + (int)floorf(hi);
-    if (xi < xa)
-      xi = xa;
-    if (xf > xb)
-      xf = xb;
-    l0 += l0x * (float)(xi - xa);
-    l1 += l1x * (float)(xi - xa);
-    for (int x = xi; x <= xf; x++, l0 += l0x, l1 += l1x)
-    {
-      int i = y * AN + x;
-      // With a vertex stuck to the camera (huge 1/w) and the others far, at the edge (eps) this can
-      // give ~0 or negative: w and the colors blow up. That is already outside the triangle: not
-      // painted (the game closed when going through King Boo in his mission: with the camera
-      // inside, the index of the toon table came out negative and was read outside memory)
-      float iwp = iwC + l0 * iwA + l1 * iwB;
-      if (!(iwp > 0))
-        continue;
-      // w-buffer: w is not linear on screen (1/w is), so the already corrected w is used
-      // z-buffer mode: depth does not need w, so the division waits until the depth test has passed
-      float w;
-      uint32_t zi;
-      if (wbuf)
-      {
-        w = 1.0f / iwp;
-        zi = (uint32_t)(w * 0x1000);
-      }
-      else
-      {
-        zi = (uint32_t)((zC + l0 * zA + l1 * zB) * 0xFFFFFF);
-      }
-      if (p->depth_same ? (zi > depth_buf[i] + 0x200 || zi + 0x200 < depth_buf[i])
-                        : zi >= depth_buf[i])
-        continue;
-      if (!wbuf)
-        w = 1.0f / iwp;
-      int vr = (int)((rC + l0 * rA + l1 * rB) * w * 2 + 0.5f);
-      int vg = (int)((gC + l0 * gA + l1 * gB) * w * 2 + 0.5f);
-      int vb = (int)((bC + l0 * bA + l1 * bB) * w * 2 + 0.5f);
-      vr = vr < 0    ? 0
-           : vr > 63 ? 63
-                     : vr; // like the console: 0..63 (and the toon table only has 32)
-      vg = vg < 0 ? 0 : vg > 63 ? 63 : vg;
-      vb = vb < 0 ? 0 : vb > 63 ? 63 : vb;
-      int cr = vr, cg = vg, cb = vb, ca = va;
-      if (mode == 2)
-      { // toon / highlight: table according to red
-        uint32_t o = 0x380 + (uint32_t)(vr >> 1) * 2;
-        uint16_t tc = (uint16_t)(io[o] | io[o + 1] << 8);
-        if ((disp3d >> 1) & 1)
-        {
-          cr = vr + (tc & 31) * 2;
-          cg = vr + ((tc >> 5) & 31) * 2;
-          cb = vr + ((tc >> 10) & 31) * 2;
-          if (cr > 63)
-            cr = 63;
-          if (cg > 63)
-            cg = 63;
-          if (cb > 63)
-            cb = 63;
-        }
-        else
-        {
-          cr = (tc & 31) * 2 + 1;
-          cg = ((tc >> 5) & 31) * 2 + 1;
-          cb = ((tc >> 10) & 31) * 2 + 1;
-        }
-        vr = cr;
-        vg = cg;
-        vb = cb;
-      }
-      if (p->textures)
-      {
-        float s = (sC + l0 * sA + l1 * sB) * w, t = (tC + l0 * tA + l1 * tB) * w;
-        int ta;
-        uint16_t tcol;
-        if (tc)
-        {
-          int si = (int)floorf(s), ti_ = (int)floorf(t);
-          // same wrap as texel(), then one cache read
-          if (rep_s)
-          {
-            if (flip_s)
-            {
-              int per = si & (2 * tw - 1);
-              si = per >= tw ? 2 * tw - 1 - per : per;
-            }
-            else
-              si &= tw - 1;
-          }
-          else
-            si = si < 0 ? 0 : si >= tw ? tw - 1 : si;
-          if (rep_t)
-          {
-            if (flip_t)
-            {
-              int per = ti_ & (2 * th - 1);
-              ti_ = per >= th ? 2 * th - 1 - per : per;
-            }
-            else
-              ti_ &= th - 1;
-          }
-          else
-            ti_ = ti_ < 0 ? 0 : ti_ >= th ? th - 1 : ti_;
-          uint32_t* slot = &tc->px[(size_t)ti_ * (size_t)tw + (size_t)si];
-          uint32_t e = *slot;
-          if ((e >> 20) != ep)
-          {
-            int a;
-            uint16_t c = texel(p->teximage, p->pltt, si, ti_, &a);
-            e = ep << 20 | (uint32_t)a << 15 | (c & 0x7FFF);
-            *slot = e;
-          }
-          tcol = (uint16_t)(e & 0x7FFF);
-          ta = (int)((e >> 15) & 31);
-        }
-        else
-        {
-          tcol = texel(p->teximage, p->pltt, (int)floorf(s), (int)floorf(t), &ta);
-        }
-        int tr = (tcol & 31) * 2 + ((tcol & 31) ? 1 : 0);
-        int tg = ((tcol >> 5) & 31) * 2 + (((tcol >> 5) & 31) ? 1 : 0);
-        int tb = ((tcol >> 10) & 31) * 2 + (((tcol >> 10) & 31) ? 1 : 0);
-        int ta6 = ta * 2 + (ta ? 1 : 0);
-        if (mode == 1)
-        { // decal
-          cr = (tr * ta6 + vr * (63 - ta6)) / 64;
-          cg = (tg * ta6 + vg * (63 - ta6)) / 64;
-          cb = (tb * ta6 + vb * (63 - ta6)) / 64;
-        }
-        else
-        { // modulate (and toon with texture)
-          cr = ((tr + 1) * (vr + 1) - 1) / 64;
-          cg = ((tg + 1) * (vg + 1) - 1) / 64;
-          cb = ((tb + 1) * (vb + 1) - 1) / 64;
-          ca = ((ta6 + 1) * (va + 1) - 1) / 64;
-        }
-      }
-      int a5 = ca >> 1;
-      if (a5 == 0)
-        continue;
-      if (test_alpha && a5 <= ref_alpha)
-        continue;
-      uint16_t col = (uint16_t)((cr >> 1) | (cg >> 1) << 5 | (cb >> 1) << 10);
-      if (a5 < 31 && mix_alpha)
-      {
-        if (layer_trans && id_buf[i] == idp && alpha_buf[i] < 31 && alpha_buf[i] > 0)
-          continue;
-        if (alpha_buf[i])
-        {
-          uint16_t d0 = color_buf[i];
-          int dr = d0 & 31, dg = (d0 >> 5) & 31, db = (d0 >> 10) & 31;
-          int nr = ((cr >> 1) * (a5 + 1) + dr * (31 - a5)) / 32;
-          int ng = ((cg >> 1) * (a5 + 1) + dg * (31 - a5)) / 32;
-          int nb = ((cb >> 1) * (a5 + 1) + db * (31 - a5)) / 32;
-          col = (uint16_t)(nr | ng << 5 | nb << 10);
-          a5 = a5 > alpha_buf[i] ? a5 : alpha_buf[i];
-        }
-        if (p->act_depth_trans)
-          depth_buf[i] = zi;
-      }
-      else
-      {
-        depth_buf[i] = zi;
-      }
-      color_buf[i] = col;
-      alpha_buf[i] = (uint8_t)a5;
-      id_buf[i] = (uint8_t)idp;
-    }
-  }
+  Scene s;
+  memset(&s, 0, sizeof s);
+  s.scale = esc;
+  s.wbuf = job.wbuf;
+  s.vp_x1 = job.vp_x1;
+  s.vp_y1 = job.vp_y1;
+  s.vp_x2 = job.vp_x2;
+  s.vp_y2 = job.vp_y2;
+  s.io = job.io;
+  for (int q = 0; q < SCENE_NTEX; q++)
+    s.tex[q] = snap.tex[q];
+  for (int q = 0; q < SCENE_NPAL; q++)
+    s.pal[q] = snap.pal[q];
+  s.polys = lst;
+  s.npolys = n;
+  s.color = color_buf;
+  s.alpha = alpha_buf;
+  char path[64];
+  snprintf(path, sizeof path, "scenes/scene-%s-%03d.dscn", dump_stamp, ++dump_count);
+  int ok = scenedump_write(path, &s);
+  dump_left--;
+  if (!ok)
+    log_msg("3D", "scene dump failed: %s", path);
+  else if (!dump_left)
+    log_msg("3D", "scene dump done: %d scenes in scenes/", dump_count);
 }
 
-static void paint_band(int yb0, int yb1)
+static HANDLE ev_job, ev_free, ev_ready;
+static volatile int gpu_ok; // set by the drawing thread: 1 = the graphics card is ready
+static char gpu_err[300]; // why it was not, in plain words
+
+// Makes the OpenGL context and the drawing on this thread, and tells start_threads how it went.
+static int gpu_start(void)
 {
-  const Job* tj = &job;
-  const uint8_t* io = tj->io;
-  uint32_t clear = (uint32_t)(io[0x350] | io[0x351] << 8 | io[0x352] << 16 | io[0x353] << 24);
-  uint16_t clear_depth = (uint16_t)((io[0x354] | io[0x355] << 8) & 0x7FFF);
-  uint16_t cc = clear & 0x7FFF;
-  uint8_t ca = (clear >> 16) & 31, cid = (clear >> 24) & 63;
-  uint32_t cz = (uint32_t)clear_depth * 0x200 + 0x1FF;
-  for (int i = yb0 * AN; i < (yb1 + 1) * AN; i++)
+  GlCtx* ctx = glctx_create(gpu_err, sizeof gpu_err);
+  if (!ctx)
+    return 0;
+  if (!glctx_selftest(gpu_err, sizeof gpu_err))
   {
-    color_buf[i] = cc;
-    alpha_buf[i] = ca;
-    depth_buf[i] = cz;
-    id_buf[i] = cid;
+    glctx_destroy(ctx);
+    return 0;
   }
-  for (int pass_num = 0; pass_num < 2; pass_num++)
-  { // first the opaque, then the translucent
-    int k0 = pass_num ? ntris_op : 0, k1 = pass_num ? ntris : ntris_op;
-    for (int k = k0; k < k1; k++)
-    {
-      const Tri* T = &tris[k];
-      if (T->y1 < yb0 || T->y0 > yb1)
-        continue; // outside this band
-      triangle(T, yb0, yb1, tj, pass_num);
-    }
-  }
-}
-
-#define NBANDAS 24
-static HANDLE ev_band_ir[NBANDAS], ev_band_done[NBANDAS], ev_job, ev_free;
-static int nbandas = NBANDAS; // as many as cores minus one (the game's), at most NBANDAS
-
-// balanced drawing: the image is cut into small row chunks and every thread takes the next free
-// chunk from a shared counter, so a thread that got cheap rows (sky) keeps helping with the
-// expensive ones (road, kart). Before, each thread had one fixed slice and the scene waited for the
-// slowest slice (2 to 3 times the average in slow scenes)
-static volatile LONG chunk_sig; // next chunk to draw
-static int chunk_rows = 8, n_chunks = 1; // rows per chunk and chunks in the image, set by paint_all
-
-static DWORD WINAPI band_thread(LPVOID arg)
-{
-  int b = (int)(intptr_t)arg;
-  for (;;)
+  gpu = gpuraster_new(esc, gpu_err, sizeof gpu_err);
+  if (!gpu)
   {
-    WaitForSingleObject(ev_band_ir[b], INFINITE);
-    for (;;)
-    {
-      int i = (int)InterlockedIncrement(&chunk_sig) - 1;
-      if (i >= n_chunks)
-        break;
-      int y0 = i * chunk_rows, y1 = y0 + chunk_rows - 1;
-      if (y1 > AT - 1)
-        y1 = AT - 1;
-      paint_band(y0, y1);
-    }
-    SetEvent(ev_band_done[b]);
+    glctx_destroy(ctx);
+    return 0;
   }
-}
-
-static void paint_all(void)
-{
-  // about 6 chunks per thread, never fewer than 4 rows each
-  chunk_rows = AT / (nbandas * 6);
-  if (chunk_rows < 4)
-    chunk_rows = 4;
-  n_chunks = (AT + chunk_rows - 1) / chunk_rows;
-  chunk_sig = 0;
-  for (int b = 0; b < nbandas; b++)
-    SetEvent(ev_band_ir[b]);
-  WaitForMultipleObjects(nbandas, ev_band_done, TRUE, INFINITE);
+  int major = 0, minor = 0;
+  glctx_version(ctx, &major, &minor);
+  log_msg("3D", "GPU drawing ready: OpenGL %d.%d", major, minor);
+  return 1;
 }
 
 static DWORD WINAPI render_thread(LPVOID arg)
 {
   (void)arg;
+  gpu_ok = gpu_start();
+  SetEvent(ev_ready);
+  if (!gpu_ok)
+    return 0;
+  int draw_errors = 0;
   for (;;)
   {
     WaitForSingleObject(ev_job, INFINITE);
@@ -1498,10 +938,20 @@ static DWORD WINAPI render_thread(LPVOID arg)
     int n = npolis[job.lst];
     int other = (output_current + 1) % 3;
     Output* S = &outputs[other];
-    texc_scene(); // texture cache: new epoch for this scene
-    prepare(&job, lst, n);
-    build_tris();
-    paint_all();
+    GpuScene gs;
+    gs.io = job.io;
+    gs.wbuf = job.wbuf;
+    gs.vp_x1 = job.vp_x1;
+    gs.vp_y1 = job.vp_y1;
+    gs.vp_x2 = job.vp_x2;
+    gs.vp_y2 = job.vp_y2;
+    gs.polys = lst;
+    gs.npolys = n;
+    gs.mem = snap;
+    if (!gpuraster_draw(gpu, &gs, color_buf, alpha_buf) && draw_errors++ < 5)
+      log_msg("3D", "the GPU drawing reported an error (the picture of this scene may be wrong)");
+    npp = gpuraster_stats(gpu)->polygons;
+    dump_scene(lst, n);
     if (esc == 1)
     {
       memcpy(S->color, color_buf, sizeof S->color);
@@ -1538,27 +988,30 @@ static void start_threads(void)
   AT = 192 * esc;
   ev_job = CreateEventW(NULL, FALSE, FALSE, NULL);
   ev_free = CreateEventW(NULL, FALSE, TRUE, NULL);
-  DWORD_PTR del_process = 0, del_system = 0; // cores the game can use
-  GetProcessAffinityMask(GetCurrentProcess(), &del_process, &del_system);
-  // With more bands than cores the game and the music lost their turn and more scenes were skipped
-  //(tested limiting the game to 2 and 4 cores).
-  nbandas = -1;
-  for (; del_process; del_process &= del_process - 1)
-    nbandas++;
-  if (nbandas < 1)
-    nbandas = 1;
-  if (nbandas > NBANDAS)
-    nbandas = NBANDAS;
-  for (int b = 0; b < nbandas; b++)
-  {
-    ev_band_ir[b] = CreateEventW(NULL, FALSE, FALSE, NULL);
-    ev_band_done[b] = CreateEventW(NULL, FALSE, FALSE, NULL);
-    CloseHandle(CreateThread(NULL, 0, band_thread, (LPVOID)(intptr_t)b, 0, NULL));
-  }
+  ev_ready = CreateEventW(NULL, FALSE, FALSE, NULL);
   HANDLE h = CreateThread(NULL, 0, render_thread, NULL, 0, NULL);
   SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL);
   CloseHandle(h);
-  log_msg("3D", "scale %dx (%dx%d pixels), %d drawing threads", esc, AN, AT, nbandas);
+  // wait for the drawing thread to say whether the graphics card can do it
+  if (WaitForSingleObject(ev_ready, 20000) != WAIT_OBJECT_0)
+  {
+    snprintf(gpu_err, sizeof gpu_err, "the graphics driver did not answer");
+    gpu_ok = 0;
+  }
+  if (!gpu_ok)
+  {
+    char msg[600];
+    log_msg("3D", "GPU drawing unavailable: %s", gpu_err);
+    snprintf(msg, sizeof msg,
+             "DriftDS needs a graphics card with OpenGL 4.5 to draw the 3D.\n\n"
+             "Problem: %s\n\n"
+             "Updating the graphics driver may help. The game will close now.",
+             gpu_err);
+    MessageBoxA(NULL, msg, "DriftDS", MB_OK | MB_ICONERROR);
+    ExitProcess(1);
+  }
+  log_msg("3D", "scale %dx (%dx%d pixels)", esc, AN, AT);
+  dump_init();
 }
 
 // With the capture on, the scene before the one just requested is shown: on the console the 3D
@@ -1606,13 +1059,13 @@ void gx_vblank(const uint8_t* io9)
   }
   for (int q = 0; q < 4; q++)
   { // maps and contents as they are at this swap (the game thread is the only writer of the maps)
-    snap_tex[q] = g_tex[q] ? copy_tex[q] : NULL;
+    snap.tex[q] = g_tex[q] ? copy_tex[q] : NULL;
     if (g_tex[q])
       memcpy(copy_tex[q], g_tex[q], 0x20000);
   }
   for (int q = 0; q < 6; q++)
   {
-    snap_pal[q] = g_texpal[q] ? copy_pal[q] : NULL;
+    snap.pal[q] = g_texpal[q] ? copy_pal[q] : NULL;
     if (g_texpal[q])
       memcpy(copy_pal[q], g_texpal[q], 0x4000);
   }

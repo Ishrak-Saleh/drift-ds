@@ -1504,8 +1504,8 @@ void ds_start(uint32_t entry9, uint32_t e7)
   timeBeginPeriod(1); // a real 1 ms Sleep(1)
   prepare_firmware();
   save_load();
+  gx_init(); // before the window: a PC without OpenGL 4.5 gets its message with no empty window
   window_init();
-  gx_init();
   sound_init();
   entry7 = e7;
   g_cpu9.id = 0;
