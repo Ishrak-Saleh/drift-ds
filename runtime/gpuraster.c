@@ -376,6 +376,10 @@ GpuRaster* gpuraster_new(int scale, char* err, size_t err_size)
   glBindVertexArray(g->vao);
   glGenBuffers(1, &g->vbo);
   glBindBuffer(GLX_ARRAY_BUFFER, g->vbo);
+  // one allocation for the life of the drawing: each scene only refills it (reallocating it every
+  // scene made the driver stall for 40 to 170 ms now and then)
+  glBufferData(GLX_ARRAY_BUFFER, (GLsizeiptr_)((size_t)g->cap_verts * sizeof(GVert)), NULL,
+               GLX_DYNAMIC_DRAW);
   const GLsizei stride = (GLsizei)sizeof(GVert);
   glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, stride, (const void*)0);
   glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, stride, (const void*)16);
@@ -726,8 +730,9 @@ int gpuraster_draw(GpuRaster* g, const GpuScene* s, uint16_t* color, uint8_t* al
 
   glBindVertexArray(g->vao);
   glBindBuffer(GLX_ARRAY_BUFFER, g->vbo);
-  glBufferData(GLX_ARRAY_BUFFER, (GLsizeiptr_)((size_t)g->nverts * sizeof(GVert)), g->verts,
-               GLX_STREAM_DRAW);
+  if (g->nverts > 0)
+    glBufferSubData(GLX_ARRAY_BUFFER, 0, (GLsizeiptr_)((size_t)g->nverts * sizeof(GVert)),
+                    g->verts);
   for (int k = 0; k < g->ngrp; k++)
   {
     glTextureBarrier(); // the shader reads what the groups before it wrote

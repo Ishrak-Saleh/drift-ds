@@ -827,10 +827,11 @@ static volatile uint64_t cont_frames, cont_skipped;
 // second, to scenes/. Each file has the registers, polygons, textures and palettes of the scene and
 // the picture this drawing made from them (scenedump.h). It is a developer tool for the GPU work:
 // the files hold game data and stay out of git. Writing slows the drawing thread, so scenes may be
-// skipped while it runs.
+// skipped while it runs. With SCENE_DUMP_CAPTURE=1 only the scenes drawn with the screen capture on
+// (track presentation, ceremony) are saved, so the count is not used up by menus.
 #define DUMP_EVERY 60
 #define DUMP_EVERY_CAPTURE 10
-static int dump_left, dump_count;
+static int dump_left, dump_count, dump_capture_only;
 static char dump_stamp[24];
 
 static void dump_init(void)
@@ -841,6 +842,8 @@ static void dump_init(void)
     dump_left = 0;
   if (dump_left > 500)
     dump_left = 500;
+  const char* co = getenv("DRIFT_SCENE_DUMP_CAPTURE");
+  dump_capture_only = co && atoi(co) == 1;
   if (!dump_left)
     return;
   time_t now = time(NULL);
@@ -851,9 +854,10 @@ static void dump_init(void)
     snprintf(dump_stamp, sizeof dump_stamp, "scene");
   CreateDirectoryA("scenes", NULL);
   log_msg("3D",
-          "scene dump on: %d scenes, one every %d (every %d with the capture on), into scenes/ "
+          "scene dump on: %d scenes, one every %d (every %d with the capture on)%s, into scenes/ "
           "(game data, never commit)",
-          dump_left, DUMP_EVERY, DUMP_EVERY_CAPTURE);
+          dump_left, DUMP_EVERY, DUMP_EVERY_CAPTURE,
+          dump_capture_only ? ", capture scenes only" : "");
 }
 
 // called by the drawing thread when a scene is painted and before its buffers are reused
@@ -864,6 +868,8 @@ static void dump_scene(const Poly* lst, int n)
   // while the screen capture is on (track presentation, ceremony) scenes are saved more often,
   // because that is the case the GPU drawing has to get right and it is over in a few seconds
   int capture = (job.io[0x67] & 0x80) != 0;
+  if (dump_capture_only && !capture)
+    return;
   int every = capture ? DUMP_EVERY_CAPTURE : DUMP_EVERY;
   if (cont_frames % every != every / 2)
     return;
@@ -976,6 +982,15 @@ static DWORD WINAPI render_thread(LPVOID arg)
     LARGE_INTEGER scene_end;
     QueryPerformanceCounter(&scene_end);
     log_note_scene(scene_end.QuadPart - scene_start.QuadPart, npp);
+    // where the time of a slow scene went (first 20 only, so the log stays short)
+    static int split_lines;
+    const GpuStats* st = gpuraster_stats(gpu);
+    if (st->ms_build + st->ms_submit + st->ms_read + st->ms_unpack > 15 && split_lines++ < 20)
+      log_msg("slow",
+              "  that scene: build %.1f, submit %.1f, card wait %.1f, unpack %.1f ms, %d textures "
+              "sent, %d groups",
+              st->ms_build, st->ms_submit, st->ms_read, st->ms_unpack, st->textures_uploaded,
+              st->groups);
   }
 }
 

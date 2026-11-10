@@ -1,6 +1,8 @@
 // test_gpuraster.c: draws recorded scenes with the GPU and compares them with the CPU picture.
 //
-// Usage: test_gpuraster [-v] [-d dir] scenes/scene-A-001.dscn scenes/scene-A-002.dscn ...
+// Usage: test_gpuraster [-r] [-v] [-d dir] scenes/scene-A-001.dscn scenes/scene-A-002.dscn ...
+//   -r       use the CPU oracle (raster_ref.h) as the reference, not the picture stored in the file
+//            (needed for files recorded with the GPU drawing live: they hold the GPU picture)
 //   -v       list the first differing pixels of each failing scene
 //   -d dir   also writes a bitmap per scene into dir that shows the differences
 //            (grey = equal, green = rounding, blue = edge, red = differing, yellow = transparency)
@@ -15,6 +17,7 @@
 // Why: this is the check for the GPU drawing. The files hold game data: keep the bitmaps out of
 // git.
 #include "glctx.h"
+#include "raster_ref.h"
 #include "gpuraster.h"
 #include "scenecmp.h"
 #include "scenedump.h"
@@ -94,7 +97,13 @@ static void write_diff_bmp(const char* path, const uint8_t* d, const uint16_t* r
 int main(int argc, char** argv)
 {
   const char* diff_dir = NULL;
-  int first = 1, verbose = 0;
+  int first = 1, verbose = 0, use_ref = 0;
+  if (argc > 1 && strcmp(argv[1], "-r") == 0)
+  { // the reference is drawn by the copied CPU rasterizer
+    use_ref = 1;
+    argv++;
+    argc--;
+  }
   if (argc > 1 && strcmp(argv[1], "-v") == 0)
   { // list the first differing pixels of each scene
     verbose = 1;
@@ -156,6 +165,10 @@ int main(int argc, char** argv)
       gs.mem.tex[q] = s.tex[q];
     for (int q = 0; q < 6; q++)
       gs.mem.pal[q] = s.pal[q];
+    if (use_ref)
+    {
+      ref_draw(&gs, s.scale, s.color, s.alpha);
+    }
     double t0 = now_ms();
     int ok = gpuraster_draw(g, &gs, c, al);
     double ms = now_ms() - t0;
