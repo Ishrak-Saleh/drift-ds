@@ -1,10 +1,10 @@
-// Video of the DS: the 9 VRAM banks and the two 2D engines (A and B).
-// Each bank (A..I) is assigned with VRAMCNT to a use: backgrounds or sprites of an
-// engine, extended palettes, 3D textures or direct access (LCDC). Here page tables
-// of 16 KB are kept for each use.
-// The engines draw line by line: 4 backgrounds + sprites, sorted by
-// priority, with windows, transparencies and the master brightness applied.
-// For now the whole frame is drawn on reaching VBlank.
+//Video of the DS: the 9 VRAM banks and the two 2D engines (A and B).
+//Each bank (A..I) is assigned with VRAMCNT to a use: backgrounds or sprites of an
+//engine, extended palettes, 3D textures or direct access (LCDC). Here page tables
+//of 16 KB are kept for each use.
+//The engines draw line by line: 4 backgrounds + sprites, sorted by
+//priority, with windows, transparencies and the master brightness applied.
+//For now the whole frame is drawn on reaching VBlank.
 #include "compat.h"
 #include "video.h"
 #include "gpu3d.h"
@@ -19,16 +19,16 @@ static uint8_t bF[0x4000], bG[0x4000], bH[0x8000], bI[0x4000];
 static uint8_t* const bank[9] = {bA, bB, bC, bD, bE, bF, bG, bH, bI};
 static const uint32_t size_bank[9] = {0x20000, 0x20000, 0x20000, 0x20000, 0x10000,
                                       0x4000,  0x4000,  0x8000,  0x4000};
-// What the image build reads: the real VRAM and 3D, or the snapshot (build on another thread)
+//what the image build reads: the real VRAM and 3D, or the snapshot (build on another thread)
 static uint8_t* const* bank_act = bank;
 static const uint16_t *c3_act, *c3hd_act;
 static const uint8_t *a3_act, *a3hd_act;
 static uint8_t vramcnt[9];
 
-// Pages of 16 KB of each zone
+//Pages of 16 KB of each zone
 static uint8_t *bg_a[32], *obj_a[16], *bg_b[8], *obj_b[8], *lcdc[41];
-static uint8_t *ext_bg_a[4], *ext_obj_a, *ext_bg_b[4], *ext_obj_b; // paletas extendidas (8 KB)
-uint8_t *g_tex[4], *g_texpal[6]; // for the 3D (later)
+static uint8_t *ext_bg_a[4], *ext_obj_a, *ext_bg_b[4], *ext_obj_b; //paletas extendidas (8 KB)
+uint8_t *g_tex[4], *g_texpal[6]; //for the 3D (later)
 
 static void map(uint8_t** table_data, int n, uint32_t off, uint8_t* mem, uint32_t nbytes)
 {
@@ -70,7 +70,7 @@ static void recalculate(void)
     switch (b)
     {
     case 0:
-    case 1: // A, B
+    case 1: //a, B
       switch (mst & 3)
       {
       case 1:
@@ -85,7 +85,7 @@ static void recalculate(void)
       }
       break;
     case 2:
-    case 3: // C, D
+    case 3: //C, D
       switch (mst)
       {
       case 1:
@@ -100,9 +100,9 @@ static void recalculate(void)
         else
           map(obj_b, 8, 0, m, t);
         break;
-      } // mst 2: ARM7 VRAM (separate)
+      } //mst 2: ARM7 VRAM (separate)
       break;
-    case 4: // E
+    case 4: //E
       switch (mst)
       {
       case 1:
@@ -123,7 +123,7 @@ static void recalculate(void)
       break;
     case 5:
     case 6:
-    { // F, G
+    { //F, G
       uint32_t off = 0x4000 * (ofs & 1) + 0x10000 * (ofs >> 1);
       switch (mst)
       {
@@ -146,7 +146,7 @@ static void recalculate(void)
       }
       break;
     }
-    case 7: // H
+    case 7: //H
       switch (mst & 3)
       {
       case 1:
@@ -158,7 +158,7 @@ static void recalculate(void)
         break;
       }
       break;
-    case 8: // I
+    case 8: //I
       switch (mst & 3)
       {
       case 1:
@@ -211,10 +211,10 @@ uint8_t* vram_ptr9(uint32_t a)
   return p ? p + (a & 0x3FFF) : NULL;
 }
 
-// ---- motores 2D ----------------------------------------------------------------
+//---- motores 2D ----------------------------------------------------------------
 typedef struct
 {
-  const uint8_t* r; // registers of the engine
+  const uint8_t* r; //registers of the engine
   const uint16_t *pal_bg, *pal_obj;
   const uint8_t* oam;
   uint8_t **bg, **obj;
@@ -247,18 +247,18 @@ static inline uint16_t ext16(uint8_t* slot, uint32_t idx)
   return slot ? (uint16_t)(slot[idx * 2] | slot[idx * 2 + 1] << 8) : 0;
 }
 
-#define PX_SET 0x8000 // in the line buffers: there is a pixel
+#define PX_SET 0x8000 //in the line buffers: there is a pixel
 
 static uint16_t lin_bg[4][256];
 static uint16_t lin_obj[256];
 static uint8_t prio_obj[256], semi_obj[256], window_obj[256];
-static uint8_t alpha_3d[256]; // alpha of background 0 when it is 3D
+static uint8_t alpha_3d[256]; //alpha of background 0 when it is 3D
 static uint16_t
-    lin_a15[256]; // the line of engine A in 15 bits, before the master brightness (for the capture)
+    lin_a15[256]; //the line of engine A in 15 bits, before the master brightness (for the capture)
 static uint8_t
-    mark3d[256]; // rescale: at this point the 3D is seen as is (it can be taken from the big 3D)
-static uint16_t brightness_a; // MASTER_BRIGHT of engine A on the current line
-static int hofs_3d; // horizontal shift of the 3D layer on the current line (the menu uses it)
+    mark3d[256]; //rescale: at this point the 3D is seen as is (it can be taken from the big 3D)
+static uint16_t brightness_a; //MASTER_BRIGHT of engine A on the current line
+static int hofs_3d; //horizontal shift of the 3D layer on the current line (the menu uses it)
 
 static void background_text(const Motor* m, int n, int y)
 {
@@ -312,8 +312,8 @@ static void background_text(const Motor* m, int n, int y)
   }
 }
 
-// Backgrounds that rotate/scale (affine) and their extended variants (bitmap)
-static int32_t ref_x[2][2], ref_y[2][2]; // internal position per engine and background (2 and 3)
+//Backgrounds that rotate/scale (affine) and their extended variants (bitmap)
+static int32_t ref_x[2][2], ref_y[2][2]; //internal position per engine and background (2 and 3)
 
 static void background_affine(const Motor* m, int n, int y, int extended)
 {
@@ -329,7 +329,7 @@ static void background_affine(const Motor* m, int n, int y, int extended)
   uint32_t chr = ((cnt >> 2) & 15) * 0x4000 + (m->is_a ? ((dc >> 24) & 7) * 0x10000 : 0);
   uint32_t scr = ((cnt >> 8) & 31) * 0x800 + (m->is_a ? ((dc >> 27) & 7) * 0x10000 : 0);
   int type = 0, w,
-      h; // 0 normal affine, 1 affine with 16 bit map, 2 bitmap 256 colors, 3 direct bitmap
+      h; //0 normal affine, 1 affine with 16 bit map, 2 bitmap 256 colors, 3 direct bitmap
   if (!extended)
   {
     w = h = 128 << sz;
@@ -408,8 +408,8 @@ static void background_affine(const Motor* m, int n, int y, int extended)
     }
     lin_bg[n][x] = opaque ? (col & 0x7FFF) | PX_SET : 0;
   }
-  *rx += (int16_t)r16(m, o + 2); // PB
-  *ry += (int16_t)r16(m, o + 6); // PD
+  *rx += (int16_t)r16(m, o + 2); //PB
+  *ry += (int16_t)r16(m, o + 6); //PD
 }
 
 static void reset_affine(const Motor* m)
@@ -436,13 +436,13 @@ static void sprites(const Motor* m, int y)
   if (!((dc >> 12) & 1))
     return;
   for (int i = 127; i >= 0; i--)
-  { // from the last to the first: the lowest index wins
+  { //from the last to the first: the lowest index wins
     const uint8_t* e = m->oam + i * 8;
     uint16_t a0 = (uint16_t)(e[0] | e[1] << 8), a1 = (uint16_t)(e[2] | e[3] << 8),
              a2 = (uint16_t)(e[4] | e[5] << 8);
     int affine = (a0 >> 8) & 1;
     if (!affine && ((a0 >> 9) & 1))
-      continue; // hidden
+      continue; //hidden
     int shape = (a0 >> 14) & 3, nbytes = (a1 >> 14) & 3;
     if (shape == 3)
       continue;
@@ -492,7 +492,7 @@ static void sprites(const Motor* m, int y)
       uint16_t col = 0;
       int opaque = 0;
       if (mode == 3)
-      { // bitmap sprite (direct color)
+      { //bitmap sprite (direct color)
         uint32_t dir;
         if ((dc >> 6) & 1)
           dir = tile * (128u << ((dc >> 22) & 1)) + (uint32_t)(ty * w + tx) * 2;
@@ -514,12 +514,12 @@ static void sprites(const Motor* m, int y)
         uint32_t base;
         int t_x = tx >> 3, t_y = ty >> 3;
         if ((dc >> 4) & 1)
-        { // mapeo 1D
+        { //mapeo 1D
           uint32_t limit = 32u << ((dc >> 20) & 3);
           base = tile * limit + (uint32_t)((t_y * (w >> 3) + t_x) * (bpp8 ? 64 : 32));
         }
         else
-        { // 2D mapping: grid of 32x32 tiles of 32 bytes
+        { //2D mapping: grid of 32x32 tiles of 32 bytes
           base = (tile + (uint32_t)(t_y * 32 + t_x * (bpp8 ? 2 : 1))) * 32;
         }
         int px = tx & 7, py = ty & 7;
@@ -552,12 +552,12 @@ static void sprites(const Motor* m, int y)
         continue;
       }
       if (mode == 3 && !(a2 >> 12))
-        continue; // bitmap with alpha 0: not seen
+        continue; //bitmap with alpha 0: not seen
       if (prio <= prio_obj[sx])
       {
         lin_obj[sx] = (col & 0x7FFF) | PX_SET;
         prio_obj[sx] = (uint8_t)prio;
-        // 1 = semi-transparent (uses BLDALPHA). Bitmap: 2 + its own alpha (0-15, in attr2)
+        //1 = semi-transparent (uses BLDALPHA). Bitmap: 2 + its own alpha (0-15, in attr2)
         semi_obj[sx] = mode == 1 ? 1 : mode == 3 ? (uint8_t)(2 + (a2 >> 12)) : 0;
       }
     }
@@ -613,13 +613,13 @@ static void draw_line(const Motor* m, int y, uint32_t* out)
   if (!m->is_a)
     mode_screen &= 1;
   if (mode_screen == 0 || (dc & 0x80))
-  { // off or forced white
+  { //off or forced white
     for (int x = 0; x < 256; x++)
       out[x] = 0xFFFFFF;
     return;
   }
   if (mode_screen == 2)
-  { // shows a VRAM bank as is
+  { //shows a VRAM bank as is
     const uint8_t* b = bank_act[(dc >> 18) & 3] + y * 512;
     for (int x = 0; x < 256; x++)
       out[x] = a_rgb((uint16_t)(b[x * 2] | b[x * 2 + 1] << 8));
@@ -638,9 +638,9 @@ static void draw_line(const Motor* m, int y, uint32_t* out)
     active[n] = (dc >> (8 + n)) & 1;
     if (!active[n])
       continue;
-    int type = 0; // 0 text, 1 affine, 2 extended
+    int type = 0; //0 text, 1 affine, 2 extended
     if (n == 0 && m->is_a && (dc & 8))
-    { // background 0 = the image of the 3D engine
+    { //background 0 = the image of the 3D engine
       const uint16_t* c3 = c3_act + y * 256;
       const uint8_t* a3 = a3_act + y * 256;
       int hofs = r16(m, 0x10) & 0x1FF;
@@ -671,7 +671,7 @@ static void draw_line(const Motor* m, int y, uint32_t* out)
       background_affine(m, n, y, type == 2);
   }
   sprites(m, y);
-  // windows: which layers are seen at each pixel (bits 0-3 backgrounds, 4 sprites, 5 effects)
+  //windows: which layers are seen at each pixel (bits 0-3 backgrounds, 4 sprites, 5 effects)
   uint8_t vis[256];
   int has_ventanas = (dc >> 13) & 7;
   for (int x = 0; x < 256; x++)
@@ -699,7 +699,7 @@ static void draw_line(const Motor* m, int y, uint32_t* out)
       }
       vis[x] = v;
     }
-    // window 0 has preference: the last of the loop is applied (w = 0)
+    //window 0 has preference: the last of the loop is applied (w = 0)
   }
   uint16_t bldcnt = r16(m, 0x50), bldalpha = r16(m, 0x52);
   int effect = (bldcnt >> 6) & 3;
@@ -712,7 +712,7 @@ static void draw_line(const Motor* m, int y, uint32_t* out)
   uint16_t mb = r16(m, 0x6C);
   for (int x = 0; x < 256; x++)
   {
-    // the two top layers: (color, layer id) with id 0-3 backgrounds, 4 sprites, 5 backdrop
+    //the two top layers: (color, layer id) with id 0-3 backgrounds, 4 sprites, 5 backdrop
     uint16_t c1 = background, c2 = background;
     int id1 = 5, id2 = 5, p1 = 5, p2 = 5;
     for (int pr = 3; pr >= 0; pr--)
@@ -746,13 +746,13 @@ static void draw_line(const Motor* m, int y, uint32_t* out)
     int effects = (vis[x] >> 5) & 1;
     int is_3d = id1 == 0 && m->is_a && (dc & 8);
     if (is_3d && alpha_3d[x] < 31 && ((bldcnt >> (8 + id2)) & 1))
-    { // 3D semitransparente
+    { //3D semitransparente
       int a = alpha_3d[x] + 1;
       c = mix(c1, c2, a / 2, 16 - a / 2);
     }
     else if (id1 == 4 && semi_obj[x] && ((bldcnt >> (8 + id2)) & 1))
     {
-      // bitmap sprites blend with their own alpha (alpha + 1)/16, not with BLDALPHA
+      //bitmap sprites blend with their own alpha (alpha + 1)/16, not with BLDALPHA
       //(the copy of the capture shown with sprites came out dark on alternate frames)
       if (semi_obj[x] >= 2)
         c = mix(c1, c2, semi_obj[x] - 1, 17 - semi_obj[x]);
@@ -770,8 +770,8 @@ static void draw_line(const Motor* m, int y, uint32_t* out)
     }
     if (m->is_a)
     {
-      lin_a15[x] = c; // for the capture (goes before the master brightness)
-      mark3d[x] = is_3d && c == c1; // the 3D is seen without mixes
+      lin_a15[x] = c; //for the capture (goes before the master brightness)
+      mark3d[x] = is_3d && c == c1; //the 3D is seen without mixes
       brightness_a = mb;
     }
     int bm = (mb >> 14) & 3;
@@ -781,9 +781,9 @@ static void draw_line(const Motor* m, int y, uint32_t* out)
   }
 }
 
-// Screen capture (DISPCAPCNT): copies a line of the image of engine A, of the 3D alone or of the
-// VRAM (or a mix) to a bank A-D. The game uses it to have 3D on both screens (track presentation,
-// ceremony): it paints one screen each frame and the other shows the copy of the previous one.
+//Screen capture (DISPCAPCNT): copies a line of the image of engine A, of the 3D alone or of the
+//VRAM (or a mix) to a bank A-D. The game uses it to have 3D on both screens (track presentation,
+//ceremony): it paints one screen each frame and the other shows the copy of the previous one.
 static void capture_line(const uint8_t* io9, uint32_t cap, int y)
 {
   static const int width[4] = {128, 256, 256, 256}, height[4] = {128, 64, 128, 192};
@@ -843,7 +843,7 @@ static void capture_line(const uint8_t* io9, uint32_t cap, int y)
   }
 }
 
-// ---- reescalado -----------------------------------------------------------------
+//---- reescalado -----------------------------------------------------------------
 int video_scale(void)
 {
   static int e;
@@ -860,9 +860,9 @@ int video_scale(void)
 }
 
 static uint32_t hd_up[1024 * 768], hd_down[1024 * 768];
-// of the last build: at which points of each line of engine A the 3D is seen as is, with what shift
-// and brightness, and whether engine A goes on top (for the in-between images: only those points
-// change)
+//of the last build: at which points of each line of engine A the 3D is seen as is, with what shift
+//and brightness, and whether engine A goes on top (for the in-between images: only those points
+//change)
 static uint16_t brightness_f[192];
 static int a_up;
 const uint32_t* video_hd(int bottom)
@@ -870,8 +870,8 @@ const uint32_t* video_hd(int bottom)
   return bottom ? hd_down : hd_up;
 }
 
-// One line of the DS at big size: what is 3D is taken from the 3D painted at more resolution. The
-// rest (menus, scoreboard, map) is repeated as is, without blurring
+//one line of the DS at big size: what is 3D is taken from the 3D painted at more resolution. The
+//rest (menus, scoreboard, map) is repeated as is, without blurring
 static void line_hd(uint32_t* dst, const uint32_t* low, int y, int is_a)
 {
   int e = video_scale(), an = 256 * e;
@@ -888,7 +888,7 @@ static void line_hd(uint32_t* dst, const uint32_t* low, int y, int is_a)
       {
         for (int sx = 0; sx < e; sx++)
         {
-          int i = row3d + (x + hofs_3d) * e + sx; // mark3d is only where x + hofs falls inside
+          int i = row3d + (x + hofs_3d) * e + sx; //mark3d is only where x + hofs falls inside
           if (!a3[i])
           {
             d[x * e + sx] = low[x];
@@ -909,7 +909,7 @@ static void line_hd(uint32_t* dst, const uint32_t* low, int y, int is_a)
   }
 }
 
-// Page tables of the two engines (the real ones or those of the snapshot)
+//Page tables of the two engines (the real ones or those of the snapshot)
 typedef struct
 {
   uint8_t *bg_a[32], *obj_a[16], *bg_b[8], *obj_b[8], *ext_bg_a[4], *ext_obj_a, *ext_bg_b[4],
@@ -947,8 +947,8 @@ static struct
   uint16_t c3[256 * 192], c3hd[1024 * 768];
   uint8_t a3[256 * 192], a3hd[1024 * 768];
   Tables t;
-  int ind; // set of 3D outputs of this snapshot (for its in-between images)
-  int64_t ts; // when it was made (time of the frame)
+  int ind; //set of 3D outputs of this snapshot (for its in-between images)
+  int64_t ts; //when it was made (time of the frame)
 } snapshot;
 static uint8_t* const bank_snapshot[9] = {snapshot.mA, snapshot.mB, snapshot.mC,
                                           snapshot.mD, snapshot.mE, snapshot.mF,
@@ -957,7 +957,7 @@ static HANDLE ev_snapshot;
 static volatile LONG assembling;
 
 static uint8_t* a_snapshot(uint8_t* p)
-{ // a pointer to the real VRAM -> the same place in the snapshot
+{ //a pointer to the real VRAM -> the same place in the snapshot
   if (!p)
     return NULL;
   for (int b = 0; b < 9; b++)
@@ -996,11 +996,11 @@ void video_draw_separate(const uint8_t* io9)
   {
     ev_snapshot = CreateEventW(NULL, FALSE, FALSE, NULL);
     HANDLE h = CreateThread(NULL, 0, assemble_thread, NULL, 0, NULL);
-    SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL); // the game first
+    SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL); //the game first
     CloseHandle(h);
   }
   if (assembling)
-    return; // still on the previous one: this one is skipped (the game does not wait)
+    return; //still on the previous one: this one is skipped (the game does not wait)
   memcpy(snapshot.io, io9, sizeof snapshot.io);
   memcpy(snapshot.pal, g_palette, sizeof snapshot.pal);
   memcpy(snapshot.oam, g_oam, sizeof snapshot.oam);
@@ -1022,10 +1022,10 @@ void video_draw_separate(const uint8_t* io9)
   }
   snapshot.t.ext_obj_a = a_snapshot(ext_obj_a);
   snapshot.t.ext_obj_b = a_snapshot(ext_obj_b);
-  // read which 3D scene is current ONCE: a scene that takes 1 to 3 ms (menus) can finish while the
-  // copies below run, and the old code (gx_indice() on every line) then mixed the colour of one
-  // scene with the alpha or the big copy of the next one, which showed up as crawling edges on the
-  // kart in menus
+  //read which 3D scene is current ONCE: a scene that takes 1 to 3 ms (menus) can finish while the
+  //copies below run, and the old code (gx_indice() on every line) then mixed the colour of one
+  //scene with the alpha or the big copy of the next one, which showed up as crawling edges on the
+  //kart in menus
   const int ind = gx_indice();
   snapshot.ind = ind;
   snapshot.ts = window_clock();
@@ -1089,8 +1089,8 @@ static void assemble(const uint8_t* io9, const uint8_t* pal, const uint8_t* oam,
       memset(out_b + y * 256, 0, 256 * 4);
     if (video_scale() > 1)
     {
-      // with the capture on, without big 3D: the other screen shows the copy (at DS size) and each
-      // screen would tremble between sharp and not sharp on alternate frames
+      //with the capture on, without big 3D: the other screen shows the copy (at DS size) and each
+      //screen would tremble between sharp and not sharp on alternate frames
       line_hd(out_a == up ? hd_up : hd_down, out_a + y * 256, y, !(cap >> 31));
       line_hd(out_b == up ? hd_up : hd_down, out_b + y * 256, y, 0);
     }

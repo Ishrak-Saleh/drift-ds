@@ -1,5 +1,5 @@
-// BIOS functions of the ARM9 and ARM7 (the SWI calls), written in C.
-// Nintendo BIOS is not used: what each one does is reimplemented.
+//BIOS functions of the ARM9 and ARM7 (the SWI calls), written in C.
+//Nintendo BIOS is not used: what each one does is reimplemented.
 #include "ds.h"
 #include <math.h>
 #include <stdio.h>
@@ -24,7 +24,7 @@ static void cpu_set(Cpu* c, int fast)
   }
 }
 
-// writes an uncompressed buffer: byte by byte (WRAM) or 16 bit (VRAM)
+//writes an uncompressed buffer: byte by byte (WRAM) or 16 bit (VRAM)
 static void take(Cpu* c, uint32_t dst, const uint8_t* buf, uint32_t total, int vram)
 {
   for (uint32_t j = 0; j < total; j += vram ? 2 : 1)
@@ -36,7 +36,7 @@ static void take(Cpu* c, uint32_t dst, const uint8_t* buf, uint32_t total, int v
   }
 }
 
-// LZ77 (SWI 0x11 and 0x12): 4 byte header, then blocks of 8 with flags
+//LZ77 (SWI 0x11 and 0x12): 4 byte header, then blocks of 8 with flags
 static void lz77(Cpu* c, int vram)
 {
   uint32_t src = c->r[0];
@@ -66,7 +66,7 @@ static void lz77(Cpu* c, int vram)
   free(buf);
 }
 
-// RL (SWI 0x14 and 0x15)
+//RL (SWI 0x14 and 0x15)
 static void rl(Cpu* c, int vram)
 {
   uint32_t src = c->r[0];
@@ -93,7 +93,7 @@ static void rl(Cpu* c, int vram)
   free(buf);
 }
 
-// Huffman (SWI 0x13): tree of 8 or 4 bits, data in 32 bit words
+//Huffman (SWI 0x13): tree of 8 or 4 bits, data in 32 bit words
 static void huffman(Cpu* c)
 {
   uint32_t src = c->r[0], hdr = brd32(c, src);
@@ -110,7 +110,7 @@ static void huffman(Cpu* c)
       uint32_t b = (w >> i) & 1, n = brd8(c, node);
       uint32_t sig = (node & ~1u) + (n & 0x3F) * 2 + 2 + b;
       if (n & (b ? 0x40 : 0x80))
-      { // hoja
+      { //hoja
         acc |= brd8(c, sig) << nacc;
         nacc += bits;
         node = tree + 1;
@@ -148,7 +148,7 @@ static uint32_t crc16(Cpu* c, uint32_t crc, uint32_t src, uint32_t len)
   return crc & 0xFFFF;
 }
 
-// BitUnPack (SWI 0x10): widens data from N bits to M bits
+//BitUnPack (SWI 0x10): widens data from N bits to M bits
 static void bit_unpack(Cpu* c)
 {
   uint32_t src = c->r[0], dst = c->r[1], info = c->r[2];
@@ -183,19 +183,19 @@ void bios_swi(Cpu* c, uint32_t n)
   {
   case 0x03:
     ds_yield(c);
-    return; // WaitByLoop: busy wait, good moment to give up the turn
+    return; //WaitByLoop: busy wait, good moment to give up the turn
   case 0x04:
   case 0x05:
-  case 0x06: // IntrWait, VBlankIntrWait, Halt
+  case 0x06: //IntrWait, VBlankIntrWait, Halt
     ds_wait(c, (int)n);
     return;
   case 0x07:
     ds_wait(c, 6);
-    return; // Sleep (ARM7): same as Halt
+    return; //Sleep (ARM7): same as Halt
   case 0x08:
-    return; // SoundBias (ARM7)
+    return; //SoundBias (ARM7)
   case 0x09:
-  { // Div
+  { //Div
     int32_t a = (int32_t)c->r[0], b = (int32_t)c->r[1];
     if (b == 0)
     {
@@ -224,7 +224,7 @@ void bios_swi(Cpu* c, uint32_t n)
     cpu_set(c, 1);
     return;
   case 0x0D:
-  { // Sqrt
+  { //Sqrt
     uint32_t v = c->r[0], r = 0, bit = 1u << 30;
     while (bit > v)
       bit >>= 2;
@@ -247,7 +247,7 @@ void bios_swi(Cpu* c, uint32_t n)
     return;
   case 0x0F:
     c->r[0] = 0;
-    return; // IsDebugger
+    return; //IsDebugger
   case 0x10:
     bit_unpack(c);
     return;
@@ -266,24 +266,24 @@ void bios_swi(Cpu* c, uint32_t n)
   case 0x15:
     rl(c, 1);
     return;
-  case 0x1A: // GetSineTable (ARM7): sine from 0 to 90 degrees in 64 steps, in 1/4096
+  case 0x1A: //GetSineTable (ARM7): sine from 0 to 90 degrees in 64 steps, in 1/4096
     c->r[0] = (uint32_t)(int32_t)lround(sin((c->r[0] & 63) * 3.14159265358979 / 128) * 4096);
     return;
-  case 0x1B: // GetPitchTable (ARM7): (2^(n/768) - 1) * 0x10000
+  case 0x1B: //GetPitchTable (ARM7): (2^(n/768) - 1) * 0x10000
     c->r[0] = (uint32_t)lround((pow(2.0, (c->r[0] % 768) / 768.0) - 1) * 65536) & 0xFFFF;
     return;
   case 0x1C:
-  { // GetVolumeTable (ARM7): 724 steps of 1/8 dB, each 6 dB section repeats 64..127
+  { //GetVolumeTable (ARM7): 724 steps of 1/8 dB, each 6 dB section repeats 64..127
     uint32_t i = c->r[0] % 724;
     double db = (i - 723.0) / 8.0;
     double amp = pow(10.0, db / 20.0);
     while (amp < 0.5 && amp > 0)
-      amp *= 2; // the section comes from the channel divider
+      amp *= 2; //the section comes from the channel divider
     c->r[0] = i == 0 ? 0 : (uint32_t)lround(amp * 127);
     return;
   }
   case 0x1F:
-    return; // CustomPost
+    return; //CustomPost
   }
   fprintf(stderr, "[cpu] SWI %02X of the %s BIOS is not implemented yet\n", n,
           c->id ? "ARM7" : "ARM9");

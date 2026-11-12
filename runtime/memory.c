@@ -1,5 +1,5 @@
-// Memory maps of the ARM9 and ARM7. Main RAM has a fast path in cpu.h.
-// Everything else is here.
+//Memory maps of the ARM9 and ARM7. Main RAM has a fast path in cpu.h.
+//Everything else is here.
 #include "ds.h"
 #include "video.h"
 #include <stdio.h>
@@ -9,12 +9,12 @@ uint8_t g_itcm[0x8000];
 uint8_t g_dtcm[0x4000];
 uint32_t g_dtcm_base = 0x027E0000;
 
-static uint8_t wram_comp[0x8000]; // WRAM compartida (32 KB)
-static uint8_t wram7[0x10000]; // own WRAM of the ARM7 (64 KB)
-static uint8_t vram7[0x40000]; // VRAM C/D lent to the ARM7 (wifi code)
-static uint8_t wifi[0x10000]; // wifi registers and RAM (plain memory for now)
+static uint8_t wram_comp[0x8000]; //WRAM compartida (32 KB)
+static uint8_t wram7[0x10000]; //own WRAM of the ARM7 (64 KB)
+static uint8_t vram7[0x40000]; //VRAM C/D lent to the ARM7 (wifi code)
+static uint8_t wifi[0x10000]; //wifi registers and RAM (plain memory for now)
 
-// Half of the shared WRAM that each processor sees, according to WRAMCNT
+//Half of the shared WRAM that each processor sees, according to WRAMCNT
 static uint8_t* wram_arm9(uint32_t a)
 {
   switch (g_wramcnt & 3)
@@ -39,10 +39,10 @@ static uint8_t* wram_arm7(uint32_t a)
   case 3:
     return wram_comp + (a & 0x7FFF);
   }
-  return wram7 + (a & 0xFFFF); // no shared WRAM: mirror of its own
+  return wram7 + (a & 0xFFFF); //no shared WRAM: mirror of its own
 }
 
-// ---- ARM9 --------------------------------------------------------------------
+//---- ARM9 --------------------------------------------------------------------
 static uint8_t* ptr9(uint32_t a)
 {
   if ((uint32_t)(a - g_dtcm_base) < 0x4000)
@@ -59,7 +59,7 @@ static uint8_t* ptr9(uint32_t a)
   case 0x05:
     return g_palette + (a & 0x7FF);
   case 0x06:
-    return vram_ptr9(a); // according to the assigned banks (video.c)
+    return vram_ptr9(a); //according to the assigned banks (video.c)
   case 0x07:
     return g_oam + (a & 0x7FF);
   }
@@ -122,7 +122,7 @@ void mem_wr32(uint32_t a, uint32_t v)
   write9(a, v, 4);
 }
 
-// ---- ARM7 --------------------------------------------------------------------
+//---- ARM7 --------------------------------------------------------------------
 static uint8_t* ptr7(uint32_t a)
 {
   switch (a >> 24)

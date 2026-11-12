@@ -1,4 +1,4 @@
-// GPU drawing of one 3D scene. See gpuraster.h.
+//GPU drawing of one 3D scene. See gpuraster.h.
 #include "gpuraster.h"
 #include "glload.h"
 #include <math.h>
@@ -16,21 +16,21 @@ static double now_ms(void)
 }
 
 #define ATLAS_W 4096
-#ifndef ATLAS_H // a test build makes it small to force the atlas to fill up
+#ifndef ATLAS_H //a test build makes it small to force the atlas to fill up
 #define ATLAS_H 2048
 #endif
-#define RES_LIMIT (1 << 22) // most texture cache entry numbers the atlas table follows
-#define GRID_W 64 // the screen is cut into GRID_W x GRID_H cells to find which polygons touch
+#define RES_LIMIT (1 << 22) //most texture cache entry numbers the atlas table follows
+#define GRID_W 64 //the screen is cut into GRID_W x GRID_H cells to find which polygons touch
 #define GRID_H 48
 
-// One corner of a triangle as the shader gets it. The first 12 floats are the screen position and
-// the attributes already divided by w (like the CPU drawing), the 8 integers are the same for the
-// whole polygon.
+//one corner of a triangle as the shader gets it. The first 12 floats are the screen position and
+//the attributes already divided by w (like the CPU drawing), the 8 integers are the same for the
+//whole polygon.
 typedef struct
 {
   float x, y, z, iw, r, g, b, s, t, pad0, pad1, pad2;
-  int32_t p0[4]; // atlas x, atlas y, texture width, texture height
-  int32_t p1[4]; // flags, 0, 0, 0 (see FLAG_*)
+  int32_t p0[4]; //atlas x, atlas y, texture width, texture height
+  int32_t p1[4]; //flags, 0, 0, 0 (see FLAG_*)
 } GVert;
 
 #define FLAG_REP_S 1
@@ -41,9 +41,9 @@ typedef struct
 #define FLAG_DEPTH_SAME 32
 #define FLAG_ACT_DEPTH 64
 #define FLAG_LAYER_TRANS 128
-#define FLAG_MODE_SHIFT 8 // 2 bits
-#define FLAG_ALPHA_SHIFT 10 // 5 bits, the polygon alpha
-#define FLAG_ID_SHIFT 16 // 6 bits, the polygon id
+#define FLAG_MODE_SHIFT 8 //2 bits
+#define FLAG_ALPHA_SHIFT 10 //5 bits, the polygon alpha
+#define FLAG_ID_SHIFT 16 //6 bits, the polygon id
 
 typedef struct
 {
@@ -62,7 +62,7 @@ struct GpuRaster
   GLint u_clear_pix, u_clear_depth;
   GLint u_size, u_wbuf, u_test_alpha, u_ref_alpha, u_mix_alpha, u_highlight, u_toon;
   TexCache* cache;
-  Res* res; // atlas place of each texture cache entry, indexed by entry number, grows as needed
+  Res* res; //atlas place of each texture cache entry, indexed by entry number, grows as needed
   int res_cap;
   int shelf_x, shelf_y, shelf_h;
   int need_reset;
@@ -70,23 +70,23 @@ struct GpuRaster
   int cap_verts, nverts;
   uint32_t* readback;
   GpuStats stats;
-  // groups of the current scene: first vertex and vertex count of each, and where the translucent
-  // ones start
-  int* grp_first; // level k: first entry in pr_first/pr_count, and how many
+  //groups of the current scene: first vertex and vertex count of each, and where the translucent
+  //ones start
+  int* grp_first; //level k: first entry in pr_first/pr_count, and how many
   int* grp_count;
   int ngrp, cap_grp;
-  // one entry per polygon: first vertex and vertex count, sorted by level for drawing
+  //one entry per polygon: first vertex and vertex count, sorted by level for drawing
   int *pr_first, *pr_count, *tmp_first, *tmp_count, *tmp_level;
   int cap_poly;
 };
 
-// ---- shaders ----
+//---- shaders ----
 
 static const char* VS =
     "#version 450 core\n"
-    "layout(location = 0) in vec4 a0;\n" // x y z iw
-    "layout(location = 1) in vec4 a1;\n" // r g b s
-    "layout(location = 2) in float a2;\n" // t
+    "layout(location = 0) in vec4 a0;\n" //x y z iw
+    "layout(location = 1) in vec4 a1;\n" //r g b s
+    "layout(location = 2) in float a2;\n" //t
     "layout(location = 3) in ivec4 q0;\n"
     "layout(location = 4) in ivec4 q1;\n"
     "uniform vec2 u_size;\n"
@@ -97,16 +97,16 @@ static const char* VS =
     "flat out ivec4 f_p0;\n"
     "flat out ivec4 f_p1;\n"
     "void main(){\n"
-    // screen row 0 is framebuffer row 0, so the picture is read back without a flip
+    //screen row 0 is framebuffer row 0, so the picture is read back without a flip
     "  gl_Position = vec4(a0.x / u_size.x * 2.0 - 1.0, a0.y / u_size.y * 2.0 - 1.0, 0.0, 1.0);\n"
     "  v_z = a0.z; v_iw = a0.w; v_rgbs = a1; v_t = a2; f_p0 = q0; f_p1 = q1;\n"
     "}\n";
 
-// The loop body of triangle() in gpu3d.c, one pixel per invocation, with the same integers.
+//the loop body of triangle() in gpu3d.c, one pixel per invocation, with the same integers.
 static const char* FS =
     "#version 450 core\n"
     "layout(binding = 0) uniform usampler2D atlas;\n"
-    "layout(binding = 1) uniform usampler2D pixtex;\n" // color | alpha << 15 | id << 20
+    "layout(binding = 1) uniform usampler2D pixtex;\n" //color | alpha << 15 | id << 20
     "layout(binding = 2) uniform usampler2D depthtex;\n"
     "uniform int u_wbuf;\n"
     "uniform int u_test_alpha;\n"
@@ -210,9 +210,9 @@ static const char* FS =
     "  o_depth = uvec4(nd, 0u, 0u, 0u);\n"
     "}\n";
 
-// Clearing the two integer images with glClearBufferuiv gave wrong reads on the first draw (the
-// driver keeps a "fast clear" mark that the shader read does not honour while the image is also
-// the render target). So the clear is a full screen triangle that writes the values.
+//clearing the two integer images with glClearBufferuiv gave wrong reads on the first draw (the
+//driver keeps a "fast clear" mark that the shader read does not honour while the image is also
+//the render target). So the clear is a full screen triangle that writes the values.
 static const char* CLEAR_VS = "#version 450 core\n"
                               "void main(){\n"
                               "  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n"
@@ -371,13 +371,13 @@ GpuRaster* gpuraster_new(int scale, char* err, size_t err_size)
     return NULL;
   }
 
-  glGenVertexArrays(1, &g->clear_vao); // no attributes: the clear needs no vertex data
+  glGenVertexArrays(1, &g->clear_vao); //no attributes: the clear needs no vertex data
   glGenVertexArrays(1, &g->vao);
   glBindVertexArray(g->vao);
   glGenBuffers(1, &g->vbo);
   glBindBuffer(GLX_ARRAY_BUFFER, g->vbo);
-  // one allocation for the life of the drawing: each scene only refills it (reallocating it every
-  // scene made the driver stall for 40 to 170 ms now and then)
+  //one allocation for the life of the drawing: each scene only refills it (reallocating it every
+  //scene made the driver stall for 40 to 170 ms now and then)
   glBufferData(GLX_ARRAY_BUFFER, (GLsizeiptr_)((size_t)g->cap_verts * sizeof(GVert)), NULL,
                GLX_DYNAMIC_DRAW);
   const GLsizei stride = (GLsizei)sizeof(GVert);
@@ -436,7 +436,7 @@ const GpuStats* gpuraster_stats(const GpuRaster* g)
   return &g->stats;
 }
 
-// ---- texture atlas ----
+//---- texture atlas ----
 
 static void atlas_reset(GpuRaster* g)
 {
@@ -463,8 +463,8 @@ static int atlas_alloc(GpuRaster* g, int w, int h, int* x, int* y)
   return 1;
 }
 
-// Finds the atlas place of a texture, decoding and sending it when it is new or changed. Returns
-// 0 when there is no texture to use.
+//finds the atlas place of a texture, decoding and sending it when it is new or changed. Returns
+//0 when there is no texture to use.
 static int texture_place(GpuRaster* g, const GpuScene* s, uint32_t ti, uint32_t pltt, Res* out)
 {
   TexEntry e;
@@ -486,7 +486,7 @@ static int texture_place(GpuRaster* g, const GpuScene* s, uint32_t ti, uint32_t 
   }
   Res* r = &g->res[e.id];
   if (r->valid && (r->w != e.w || r->h != e.h))
-    r->valid = 0; // the slot of the cache got another texture
+    r->valid = 0; //the slot of the cache got another texture
   if (!r->valid)
   {
     int x, y;
@@ -509,10 +509,10 @@ static int texture_place(GpuRaster* g, const GpuScene* s, uint32_t ti, uint32_t 
   return 1;
 }
 
-// ---- building the vertex list ----
+//---- building the vertex list ----
 
-// Same selection and screen maths as prepare() in gpu3d.c. Pass 0 takes the opaque polygons, pass
-// 1 the translucent ones, each in list order.
+//same selection and screen maths as prepare() in gpu3d.c. Pass 0 takes the opaque polygons, pass
+//1 the translucent ones, each in list order.
 static void build(GpuRaster* g, const GpuScene* s)
 {
   const uint8_t* io = s->io;
@@ -527,7 +527,7 @@ static void build(GpuRaster* g, const GpuScene* s)
   g->stats.triangles = 0;
   g->stats.textures_uploaded = 0;
   g->stats.textures_missing = 0;
-  int cell[GRID_W * GRID_H]; // highest level of a polygon that touched the cell
+  int cell[GRID_W * GRID_H]; //highest level of a polygon that touched the cell
   memset(cell, 0, sizeof cell);
   int npoly = 0, nlevel = 0;
   for (int pass = 0; pass < 2; pass++)
@@ -539,7 +539,7 @@ static void build(GpuRaster* g, const GpuScene* s)
         continue;
       int alpha = (p->attr >> 16) & 31, mode = (p->attr >> 4) & 3;
       if (alpha == 0 || mode == 3)
-        continue; // wireframe and shadows are not drawn
+        continue; //wireframe and shadows are not drawn
       GVert v[MAX_VERT_POLY];
       float area = 0, minx = 1e30f, miny = 1e30f, maxx = -1e30f, maxy = -1e30f;
       for (int i = 0; i < p->n; i++)
@@ -576,7 +576,7 @@ static void build(GpuRaster* g, const GpuScene* s)
         continue;
       if (!front && !((p->attr >> 6) & 1))
         continue;
-      // nothing of it lands in the image
+      //nothing of it lands in the image
       Box bx;
       bx.x0 = (int)floorf(fmaxf(minx, 0.0f));
       bx.y0 = (int)floorf(fmaxf(miny, 0.0f));
@@ -626,7 +626,7 @@ static void build(GpuRaster* g, const GpuScene* s)
 
       if (npoly == g->cap_poly)
         continue;
-      // a polygon is drawn one level after the highest level of the polygons it touches
+      //a polygon is drawn one level after the highest level of the polygons it touches
       int cx0 = bx.x0 * GRID_W / AN, cx1 = bx.x1 * GRID_W / AN;
       int cy0 = bx.y0 * GRID_H / AT, cy1 = bx.y1 * GRID_H / AT;
       int level = 0;
@@ -654,7 +654,7 @@ static void build(GpuRaster* g, const GpuScene* s)
       npoly++;
     }
   }
-  // sort the polygons by level (counting sort keeps the list order inside a level)
+  //sort the polygons by level (counting sort keeps the list order inside a level)
   if (nlevel > g->cap_grp)
   {
     g->grp_first = realloc(g->grp_first, (size_t)nlevel * sizeof(int));
@@ -689,7 +689,7 @@ int gpuraster_draw(GpuRaster* g, const GpuScene* s, uint16_t* color, uint8_t* al
   texcache_scene(g->cache);
   build(g, s);
   if (g->need_reset)
-  { // the atlas was full: empty it and place this scene's textures again
+  { //the atlas was full: empty it and place this scene's textures again
     atlas_reset(g);
     build(g, s);
   }
@@ -735,7 +735,7 @@ int gpuraster_draw(GpuRaster* g, const GpuScene* s, uint16_t* color, uint8_t* al
                     g->verts);
   for (int k = 0; k < g->ngrp; k++)
   {
-    glTextureBarrier(); // the shader reads what the groups before it wrote
+    glTextureBarrier(); //the shader reads what the groups before it wrote
     glMultiDrawArrays(GL_TRIANGLES, g->pr_first + g->grp_first[k], g->pr_count + g->grp_first[k],
                       g->grp_count[k]);
   }

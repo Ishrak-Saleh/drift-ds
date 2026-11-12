@@ -1,4 +1,4 @@
-// Picture compare for the GPU work. See scenecmp.h.
+//Picture compare for the GPU work. See scenecmp.h.
 #include "scenecmp.h"
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +21,7 @@ static int channel_diff(uint16_t a, uint16_t b)
   return d;
 }
 
-// a transparent pixel has no colour that matters
+//a transparent pixel has no colour that matters
 static int pixel_diff(uint16_t ca, uint8_t aa, uint16_t cb, uint8_t ab)
 {
   if (aa == 0 && ab == 0)
@@ -31,13 +31,14 @@ static int pixel_diff(uint16_t ca, uint8_t aa, uint16_t cb, uint8_t ab)
   return d > da ? d : da;
 }
 
-// shifted: the got pixel equals (within step) one of the 8 neighbours of the reference pixel, so
-// the colour is right and only the sampling position moved a hair (a texel or polygon boundary)
+//shifted: the got pixel equals (within step) one of the neighbours of the reference pixel up to 2
+//pixels away (one DS pixel at scale 2), so the colour is right and only the sampling position
+//moved a hair (a texel or polygon boundary)
 static int is_shifted(const uint16_t* c, const uint8_t* a, int w, int h, int x, int y, uint16_t gc,
                       uint8_t ga, int step)
 {
-  for (int dy = -1; dy <= 1; dy++)
-    for (int dx = -1; dx <= 1; dx++)
+  for (int dy = -2; dy <= 2; dy++)
+    for (int dx = -2; dx <= 2; dx++)
     {
       int nx = x + dx, ny = y + dy;
       if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= w || ny >= h)
@@ -49,7 +50,7 @@ static int is_shifted(const uint16_t* c, const uint8_t* a, int w, int h, int x, 
   return 0;
 }
 
-// edge: some neighbour of the reference pixel is clearly different from it
+//edge: some neighbour of the reference pixel is clearly different from it
 static int is_edge(const uint16_t* c, const uint8_t* a, int w, int h, int x, int y, int step)
 {
   for (int dy = -1; dy <= 1; dy++)
@@ -72,7 +73,7 @@ CmpResult cmp_pictures(const uint16_t* ref_c, const uint8_t* ref_a, const uint16
   memset(&r, 0, sizeof r);
   CmpRule rl = rule ? *rule : cmp_default_rule();
   if (!ref_c || !ref_a || !got_c || !got_a || w <= 0 || h <= 0)
-    return r; // pass stays 0
+    return r; //pass stays 0
   r.total = w * h;
   for (int y = 0; y < h; y++)
     for (int x = 0; x < w; x++)
@@ -111,7 +112,7 @@ CmpResult cmp_pictures(const uint16_t* ref_c, const uint8_t* ref_a, const uint16
       if (diff_out)
         diff_out[i] = mark;
     }
-  // the share is taken of the whole picture, as the rule was agreed (0.1 percent of the pixels)
+  //the share is taken of the whole picture, as the rule was agreed (0.1 percent of the pixels)
   r.percent = 100.0 * r.differing / r.total;
   r.shifted_percent = 100.0 * r.shifted / r.total;
   r.pass = r.percent <= rl.max_percent && r.shifted_percent <= rl.max_percent &&

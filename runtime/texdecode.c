@@ -1,5 +1,5 @@
-// Texture decoding of the DS 3D engine: whole textures, a hash of their bytes, and a cache.
-// See texdecode.h.
+//Texture decoding of the DS 3D engine: whole textures, a hash of their bytes, and a cache.
+//See texdecode.h.
 #include "texdecode.h"
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +20,7 @@ int tex_decode(const TexMem* m, uint32_t ti, uint32_t pltt, uint32_t* out)
   return 1;
 }
 
-// ---- hash of the bytes a texture reads ----
+//---- hash of the bytes a texture reads ----
 
 static uint64_t mix(uint64_t h, uint64_t v)
 {
@@ -30,8 +30,8 @@ static uint64_t mix(uint64_t h, uint64_t v)
   return h;
 }
 
-// p == NULL is a slot that is not mapped: it reads as zeros, but it must not hash like mapped
-// zeros, so the picture is not wrongly kept when a bank is mapped later
+//p == NULL is a slot that is not mapped: it reads as zeros, but it must not hash like mapped
+//zeros, so the picture is not wrongly kept when a bank is mapped later
 static uint64_t hash_bytes(uint64_t h, const uint8_t* p, size_t n)
 {
   if (!p)
@@ -49,7 +49,7 @@ static uint64_t hash_bytes(uint64_t h, const uint8_t* p, size_t n)
   return mix(h, tail ^ ((uint64_t)n << 56));
 }
 
-// texture memory is 4 slots of 128 KB, an address wraps at 512 KB (texmem_tex8)
+//texture memory is 4 slots of 128 KB, an address wraps at 512 KB (texmem_tex8)
 static uint64_t hash_tex_range(const TexMem* m, uint64_t h, uint32_t start, uint32_t len)
 {
   while (len)
@@ -65,7 +65,7 @@ static uint64_t hash_tex_range(const TexMem* m, uint64_t h, uint32_t start, uint
   return h;
 }
 
-// palette memory is 6 slots of 16 KB, an address wraps at 96 KB (texmem_pal16)
+//palette memory is 6 slots of 16 KB, an address wraps at 96 KB (texmem_pal16)
 static uint64_t hash_pal_range(const TexMem* m, uint64_t h, uint32_t start, uint32_t len)
 {
   while (len)
@@ -89,47 +89,47 @@ uint64_t tex_hash(const TexMem* m, uint32_t ti, uint32_t pltt)
     return h;
   uint32_t w = (uint32_t)tex_width(ti), hh = (uint32_t)tex_height(ti);
   uint32_t texels = w * hh, base = (ti & 0xFFFF) * 8, pb = pltt * 16;
-  // how many bytes of texture data, and which part of the palette, each format reads
+  //how many bytes of texture data, and which part of the palette, each format reads
   uint32_t data = 0, pal_start = pb, pal_len = 0;
   switch (fmt)
   {
-  case 1: // A3I5: 32 colors
+  case 1: //A3I5: 32 colors
     data = texels;
     pal_len = 64;
     break;
-  case 2: // 4 colors, the palette base counts in 8 byte steps
+  case 2: //4 colors, the palette base counts in 8 byte steps
     data = texels / 4;
     pal_start = pltt * 8;
     pal_len = 8;
     break;
-  case 3: // 16 colors
+  case 3: //16 colors
     data = texels / 2;
     pal_len = 32;
     break;
-  case 4: // 256 colors
+  case 4: //256 colors
     data = texels;
     pal_len = 512;
     break;
-  case 5: // compressed: any palette entry up to 0x3FFF * 4 + 8 bytes from the base can be used
+  case 5: //compressed: any palette entry up to 0x3FFF * 4 + 8 bytes from the base can be used
     data = texels / 4;
     pal_len = 0x10010;
     break;
-  case 6: // A5I3: 8 colors
+  case 6: //A5I3: 8 colors
     data = texels;
     pal_len = 16;
     break;
-  case 7: // direct color
+  case 7: //direct color
     data = texels * 2;
     break;
   }
   h = hash_tex_range(m, h, base, data);
   if (fmt == 5)
-  { // each 4x4 block has a 16 bit info word in the second slot (see texmem_texel). Blocks that sit
-    // in the same 128 KB page of the data have their words next to each other
+  { //each 4x4 block has a 16 bit info word in the second slot (see texmem_texel). Blocks that sit
+    //in the same 128 KB page of the data have their words next to each other
     uint32_t end = base + data;
     for (uint32_t r0 = base; r0 < end;)
     {
-      uint32_t r1 = (r0 | 0x1FFFF) + 1; // end of this 128 KB page of the data
+      uint32_t r1 = (r0 | 0x1FFFF) + 1; //end of this 128 KB page of the data
       if (r1 > end)
         r1 = end;
       uint32_t slot = (r0 & 0x7FFFF) >= 0x40000 ? 0x10000 : 0;
@@ -143,27 +143,27 @@ uint64_t tex_hash(const TexMem* m, uint32_t ti, uint32_t pltt)
   return h;
 }
 
-// ---- cache ----
+//---- cache ----
 
 typedef struct
 {
-  uint32_t key_ti, pltt; // key
-  uint64_t hash; // of the bytes when it was decoded
-  uint64_t last_scene; // last scene that asked for it
-  uint64_t checked_scene; // last scene whose bytes were hashed for it
+  uint32_t key_ti, pltt; //key
+  uint64_t hash; //of the bytes when it was decoded
+  uint64_t last_scene; //last scene that asked for it
+  uint64_t checked_scene; //last scene whose bytes were hashed for it
   uint32_t* px;
   int w, h;
-  int next; // next entry in the same bucket, or the next free entry
+  int next; //next entry in the same bucket, or the next free entry
   int used;
 } Ent;
 
-#define BUCKETS 1024 // power of 2
+#define BUCKETS 1024 //power of 2
 
 struct TexCache
 {
   Ent* e;
-  int n, cap; // entries in use or free (slots handed out), allocated
-  int free_head; // first free slot, -1 if none
+  int n, cap; //entries in use or free (slots handed out), allocated
+  int free_head; //first free slot, -1 if none
   int bucket[BUCKETS];
   size_t bytes, max_bytes;
   uint64_t scene, decodes;
@@ -221,8 +221,8 @@ static void remove_entry(TexCache* c, int i)
   c->alive--;
 }
 
-// makes room for `need` bytes by dropping the entries that were used longest ago, never one that
-// the current scene already used. Returns 1 when it fits.
+//makes room for `need` bytes by dropping the entries that were used longest ago, never one that
+//the current scene already used. Returns 1 when it fits.
 static int make_room(TexCache* c, size_t need)
 {
   while (c->bytes + need > c->max_bytes)
@@ -265,7 +265,7 @@ int texcache_get(TexCache* c, const TexMem* m, uint32_t ti, uint32_t pltt, TexEn
     return 0;
   uint32_t key = ti & TEX_KEY_MASK;
   if (((ti >> 26) & 7) == 7)
-    pltt = 0; // direct color has no palette
+    pltt = 0; //direct color has no palette
   unsigned b = bucket_of(key, pltt);
   int i = c->bucket[b];
   while (i >= 0 && !(c->e[i].key_ti == key && c->e[i].pltt == pltt))
@@ -277,7 +277,7 @@ int texcache_get(TexCache* c, const TexMem* m, uint32_t ti, uint32_t pltt, TexEn
   {
     Ent* e = &c->e[i];
     if (e->checked_scene != c->scene)
-    { // first use in this scene: are the bytes still the same?
+    { //first use in this scene: are the bytes still the same?
       uint64_t hs = tex_hash(m, ti, pltt);
       e->checked_scene = c->scene;
       if (hs != e->hash)

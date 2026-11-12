@@ -1,5 +1,5 @@
-// PS5/PS4 gamepad (read directly over USB or Bluetooth): cross = A, circle = B,
-// square = Y, triangle = X, L1/L2 = L, R1/R2 = R, Options = Start, Create = Select
+//PS5/PS4 gamepad (read directly over USB or Bluetooth): cross = A, circle = B,
+//square = Y, triangle = X, L1/L2 = L, R1/R2 = R, Options = Start, Create = Select
 #include <windows.h>
 #include <xinput.h>
 
@@ -20,7 +20,7 @@
 #define GL_CLAMP_TO_EDGE 0x812F
 #endif
 
-void save_write_pending(void); // ds.c. not included from ds.h: its R macro clashes with windows.h
+void save_write_pending(void); //ds.c. not included from ds.h: its R macro clashes with windows.h
 
 #define SCALE 2
 
@@ -29,11 +29,11 @@ volatile uint16_t g_keyxy = 0x3;
 volatile int g_stylus, g_stylus_x, g_stylus_y;
 
 static HWND window;
-// Images are painted in a separate thread (paint_thread), with OpenGL and at the pace of the
-// monitor. They go through a queue of NM images, each with the time it is due to be shown
-// (QueryPerformanceCounter): so the in-between images (DRIFT_FPS: 120, 180 or 240) fit spread
-// between two game frames. On each refresh the painter shows the newest one whose time has come. If
-// it runs late it skips the extras. The game never waits.
+//images are painted in a separate thread (paint_thread), with OpenGL and at the pace of the
+//monitor. They go through a queue of NM images, each with the time it is due to be shown
+//(QueryPerformanceCounter): so the in-between images (DRIFT_FPS: 120, 180 or 240) fit spread
+//between two game frames. On each refresh the painter shows the newest one whose time has come. If
+//it runs late it skips the extras. The game never waits.
 typedef struct
 {
   uint32_t low[256 * 384];
@@ -41,33 +41,32 @@ typedef struct
 } Frame;
 #define NM 8
 static Frame frames[NM];
-static int64_t frame_ts[NM]; // when to show it. 0 = not ready yet
-static int i_write; // the next one to be filled
-static volatile int i_viewing = -1; // the one the painter has (not touched)
-static volatile LONG
-    pictures_shown; // different images shown (for the title: those seen per second)
+static int64_t frame_ts[NM]; //when to show it. 0 = not ready yet
+static int i_write; //the next one to be filled
+static volatile int i_viewing = -1; //the one the painter has (not touched)
+static volatile LONG pictures_shown; //different images shown (for the title: those seen per second)
 static int i_reserved;
-static const Frame* last = &frames[0]; // the last complete game image (for BMP captures)
+static const Frame* last = &frames[0]; //the last complete game image (for BMP captures)
 static CRITICAL_SECTION cs_frames, cs_gdi;
 static HANDLE ev_paint;
-static uint32_t* image = frames[0].low; // the one that compose() paints
+static uint32_t* image = frames[0].low; //the one that compose() paints
 static BITMAPINFO bmi;
-static volatile uint16_t keyboard_in = 0x3FF, keyboard_xy = 3; // keyboard state (0 = pressed)
-// Where the image is drawn inside the window (changes in full screen)
+static volatile uint16_t keyboard_in = 0x3FF, keyboard_xy = 3; //keyboard state (0 = pressed)
+//where the image is drawn inside the window (changes in full screen)
 static int dst_x, dst_y, dst_w = 256 * SCALE, dst_h = 384 * SCALE;
-// How the window is shown now (WINMODE_*, see winmode.h). Written on the window thread under
-// cs_gdi, read by the paint thread
+//how the window is shown now (WINMODE_*, see winmode.h). Written on the window thread under
+//cs_gdi, read by the paint thread
 static volatile int window_mode = WINMODE_WINDOWED;
-// Both fullscreen modes show the two screens side by side, the windowed one stacks them
+//both fullscreen modes show the two screens side by side, the windowed one stacks them
 static int is_full(void)
 {
   return window_mode != WINMODE_WINDOWED;
 }
-// In full screen: the two screens side by side (main on the left, touch on the right)
+//in full screen: the two screens side by side (main on the left, touch on the right)
 static uint32_t image_side[512 * 192];
 static BITMAPINFO bmi_side;
 static RECT rect_normal;
-// Rescale (DRIFT_SCALE > 1): the same image at big size, with the 3D painted at more resolution
+//Rescale (DRIFT_SCALE > 1): the same image at big size, with the 3D painted at more resolution
 int video_scale(void);
 const uint32_t* video_hd(int bottom);
 static uint32_t *image_hd = frames[0].hd, image_side_hd[2048 * 768];
@@ -81,29 +80,29 @@ static void calculate_target(void)
   int w = r.right, h = r.bottom;
   if (w <= 0 || h <= 0)
     return;
-  int iw = is_full() ? 512 : 256, ih = is_full() ? 192 : 384; // size of the image
+  int iw = is_full() ? 512 : 256, ih = is_full() ? 192 : 384; //size of the image
   if (w * ih > h * iw)
   {
     dst_h = h;
     dst_w = h * iw / ih;
-  } // spare width: bands on the sides
+  } //spare width: bands on the sides
   else
   {
     dst_w = w;
     dst_h = w * ih / iw;
-  } // spare height: bands above and below
+  } //spare height: bands above and below
   dst_x = (w - dst_w) / 2;
   dst_y = (h - dst_h) / 2;
 }
 
-// ---- Toast: a small label at the top right that names the new window mode for a moment ----
-// set_mode() stores the text and the time under cs_gdi. The paint thread reads them on every
-// picture, so the label shows and fades without any extra thread or timer
+//---- Toast: a small label at the top right that names the new window mode for a moment ----
+//set_mode() stores the text and the time under cs_gdi. The paint thread reads them on every
+//picture, so the label shows and fades without any extra thread or timer
 #define TOAST_MS 2000
 #define TOAST_FADE_MS 500
 static wchar_t toast_text[64];
-static int64_t toast_start; // QueryPerformanceCounter ticks when it appeared. 0 = never shown
-static int toast_serial; // grows with every new toast, so the painted label is rebuilt
+static int64_t toast_start; //QueryPerformanceCounter ticks when it appeared. 0 = never shown
+static int toast_serial; //grows with every new toast, so the painted label is rebuilt
 
 static void toast_show(const wchar_t* text)
 {
@@ -117,7 +116,7 @@ static void toast_show(const wchar_t* text)
   LeaveCriticalSection(&cs_gdi);
 }
 
-// 1 while the toast is fully shown, fading to 0 in its last half second, 0 when it is gone
+//1 while the toast is fully shown, fading to 0 in its last half second, 0 when it is gone
 static float toast_alpha(int64_t start)
 {
   if (!start)
@@ -133,8 +132,8 @@ static float toast_alpha(int64_t start)
   return 1.0f;
 }
 
-// letter height in pixels: follows the window height so it reads well at 1080p and in a small
-// window
+//letter height in pixels: follows the window height so it reads well at 1080p and in a small
+//window
 static int toast_px(int window_height)
 {
   int px = window_height / 28;
@@ -148,7 +147,7 @@ static HFONT toast_font(int px)
                      DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 }
 
-// the label on a GDI device context (only used when OpenGL is not available)
+//the label on a GDI device context (only used when OpenGL is not available)
 static void toast_draw_gdi(HDC dc, int cw, int ch)
 {
   wchar_t text[64];
@@ -176,7 +175,7 @@ static void toast_draw_gdi(HDC dc, int cw, int ch)
 }
 
 static void compose(HDC dc)
-{ // draws everything (image, bands) on dc
+{ //draws everything (image, bands) on dc
   RECT r;
   GetClientRect(window, &r);
   HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
@@ -208,7 +207,7 @@ static void compose(HDC dc)
   else if (is_full())
   {
     for (int y = 0; y < 192; y++)
-    { // left: top screen. right: bottom screen
+    { //left: top screen. right: bottom screen
       memcpy(image_side + y * 512, image + y * 256, 256 * 4);
       memcpy(image_side + y * 512 + 256, image + (192 + y) * 256, 256 * 4);
     }
@@ -223,7 +222,7 @@ static void compose(HDC dc)
   toast_draw_gdi(dc, r.right, r.bottom);
 }
 
-// Double buffer: composed in an invisible image and sent to the screen at once
+//Double buffer: composed in an invisible image and sent to the screen at once
 //(otherwise a flicker shows between painting the game and painting the notice).
 static HDC mem_dc;
 static HBITMAP mem_bmp;
@@ -250,19 +249,19 @@ static void draw_en(HDC dc)
   BitBlt(dc, 0, 0, mem_w, mem_h, mem_dc, 0, 0, SRCCOPY);
 }
 
-// ---- Fullscreen: a real display mode switch (CDS_FULLSCREEN) ----
-// The monitor is switched to the size set in FULLSCREEN_SIZE (empty = the size the desktop has
-// now). The refresh rate is the desktop's if the size has it. The desktop mode comes back when
-// fullscreen ends, and Windows reverts it by itself if the game dies.
-static wchar_t full_device[32]; // the monitor that was taken over
-static int full_w, full_h, full_hz; // the mode it was switched to, kept to take it over again
-static int desk_w, desk_h, desk_hz; // the mode it had before (for the log)
-static int want_full_w, want_full_h; // FULLSCREEN_SIZE from settings.ini. 0 = the desktop size
-static int display_taken; // 1 while the display mode is ours
+//---- Fullscreen: a real display mode switch (CDS_FULLSCREEN) ----
+//The monitor is switched to the size set in FULLSCREEN_SIZE (empty = the size the desktop has
+//now). The refresh rate is the desktop's if the size has it. The desktop mode comes back when
+//fullscreen ends, and Windows reverts it by itself if the game dies.
+static wchar_t full_device[32]; //the monitor that was taken over
+static int full_w, full_h, full_hz; //the mode it was switched to, kept to take it over again
+static int desk_w, desk_h, desk_hz; //the mode it had before (for the log)
+static int want_full_w, want_full_h; //FULLSCREEN_SIZE from settings.ini. 0 = the desktop size
+static int display_taken; //1 while the display mode is ours
 
-// takes the display mode over. fresh = choose the mode first (otherwise the one kept from the last
-// time is used, because a minimized window cannot say which monitor it is on).
-// 1 = done, 0 = failed (the reason is logged)
+//takes the display mode over. fresh = choose the mode first (otherwise the one kept from the last
+//time is used, because a minimized window cannot say which monitor it is on).
+//1 = done, 0 = failed (the reason is logged)
 static int display_take(int fresh)
 {
   if (fresh && !sysinfo_pick_mode(window, want_full_w, want_full_h, &full_w, &full_h, &full_hz,
@@ -295,7 +294,7 @@ static int display_take(int fresh)
   return 1;
 }
 
-// puts the desktop display mode back. Does nothing if it was never taken
+//puts the desktop display mode back. Does nothing if it was never taken
 static void display_restore(void)
 {
   if (!display_taken)
@@ -304,13 +303,13 @@ static void display_restore(void)
   display_taken = 0;
 }
 
-// the window over its whole monitor, without border (both fullscreen modes use this). The monitor
-// rectangle is read now, so after a display mode switch it is the new size.
-// borderless = the borderless mode: the window is always one pixel bigger than the monitor, on an
-// edge with no other monitor (not a setting, players cannot turn it off). A window that is not
-// exactly the monitor size does not get the driver's direct way of showing the picture, which
-// stalls when the Windows volume overlay appears. Bigger (not smaller) keeps the monitor covered,
-// so no stripe of desktop shows
+//the window over its whole monitor, without border (both fullscreen modes use this). The monitor
+//rectangle is read now, so after a display mode switch it is the new size.
+//borderless = the borderless mode: the window is always one pixel bigger than the monitor, on an
+//edge with no other monitor (not a setting, players cannot turn it off). A window that is not
+//exactly the monitor size does not get the driver's direct way of showing the picture, which
+//stalls when the Windows volume overlay appears. Bigger (not smaller) keeps the monitor covered,
+//so no stripe of desktop shows
 static void place_popup(int borderless)
 {
   MONITORINFO mi = {sizeof mi};
@@ -355,17 +354,17 @@ static const wchar_t* toast_name(int mode)
   return L"Windowed";
 }
 
-// Switches the window to a mode. startup = the first call, when the window was just made: no
-// toast then. A fullscreen that Windows refuses becomes borderless fullscreen, and says so.
+//switches the window to a mode. startup = the first call, when the window was just made: no
+//toast then. A fullscreen that Windows refuses becomes borderless fullscreen, and says so.
 static void set_mode(int mode, int startup)
 {
   int from = window_mode;
-  // before the switch: the slow picture can end before or after the log line below. A display
-  // mode switch takes longer: the monitor has to find its signal again
+  //before the switch: the slow picture can end before or after the log line below. A display
+  //mode switch takes longer: the monitor has to find its signal again
   log_quiet(mode == WINMODE_FULLSCREEN || from == WINMODE_FULLSCREEN ? 3.0 : 1.0);
   int actual = mode, failed = 0;
   if (from == WINMODE_WINDOWED && mode != WINMODE_WINDOWED)
-  { // remember the normal window to come back to
+  { //remember the normal window to come back to
     GetWindowRect(window, &rect_normal);
     style_normal = GetWindowLongW(window, GWL_STYLE);
   }
@@ -377,7 +376,7 @@ static void set_mode(int mode, int startup)
   if (actual != WINMODE_FULLSCREEN)
     display_restore();
   EnterCriticalSection(&cs_gdi);
-  window_mode = actual; // before the window moves: the resize that follows must see the new mode
+  window_mode = actual; //before the window moves: the resize that follows must see the new mode
   LeaveCriticalSection(&cs_gdi);
   if (actual == WINMODE_WINDOWED)
   {
@@ -413,15 +412,15 @@ static void set_mode(int mode, int startup)
   SetEvent(ev_paint);
 }
 
-// DRIFT_OCULTO=1: no window (tests without bothering), only captures
+//DRIFT_OCULTO=1: no window (tests without bothering), only captures
 
-// before this the keys were a fixed switch here. now the user can remap them, see keys.h
-// flow: native event -> key id -> key_down[] -> bind_pressed_mask -> keyboard_in and keyboard_xy
-// window_messages later merges those with the controller state
+//before this the keys were a fixed switch here. now the user can remap them, see keys.h
+//flow: native event -> key id -> key_down[] -> bind_pressed_mask -> keyboard_in and keyboard_xy
+//window_messages later merges those with the controller state
 
-// native key code to key id. built once. 0 means the key cannot be bound
+//native key code to key id. built once. 0 means the key cannot be bound
 static uint8_t vk_to_key[256];
-static uint8_t key_down[TK_COUNT]; // 1 = held. indexed by key id
+static uint8_t key_down[TK_COUNT]; //1 = held. indexed by key id
 
 static void build_key_table(void)
 {
@@ -433,7 +432,7 @@ static void build_key_table(void)
     vk_to_key[VK_NUMPAD0 + i] = (uint8_t)(TK_NUM0 + i);
   }
   for (int i = 0; i < 8; i++)
-    vk_to_key[VK_F2 + i] = (uint8_t)(TK_F2 + i); // F2 to F9. F1 F10 F11 stay fixed
+    vk_to_key[VK_F2 + i] = (uint8_t)(TK_F2 + i); //F2 to F9. F1 F10 F11 stay fixed
   vk_to_key[VK_F12] = TK_F12;
   vk_to_key[VK_UP] = TK_UP;
   vk_to_key[VK_DOWN] = TK_DOWN;
@@ -462,8 +461,8 @@ static void build_key_table(void)
   vk_to_key[VK_OEM_3] = TK_LOW;
 }
 
-// key id of a WM_KEYDOWN or WM_KEYUP. Windows sends one generic code for both Shift and both Ctrl
-// keys the scancode and the extended bit in lp tell which side it was
+//key id of a WM_KEYDOWN or WM_KEYUP. Windows sends one generic code for both Shift and both Ctrl
+//keys the scancode and the extended bit in lp tell which side it was
 static int key_from_event(WPARAM vk, LPARAM lp)
 {
   if (vk == VK_SHIFT)
@@ -474,7 +473,7 @@ static int key_from_event(WPARAM vk, LPARAM lp)
   return vk < 256 ? vk_to_key[vk] : TK_NONE;
 }
 
-// rebuild the keyboard state of the DS buttons from the held keys. bits are 0 when pressed
+//rebuild the keyboard state of the DS buttons from the held keys. bits are 0 when pressed
 static void update_keyboard(void)
 {
   uint16_t pressed = bind_pressed_mask(bind_table(), key_down);
@@ -482,14 +481,14 @@ static void update_keyboard(void)
   keyboard_xy = (uint16_t)(3 & ~(pressed >> 10));
 }
 
-// let go of everything. used on focus loss and when the menu opens so no key stays stuck
+//let go of everything. used on focus loss and when the menu opens so no key stays stuck
 static void release_all_keys(void)
 {
   memset(key_down, 0, sizeof key_down);
   update_keyboard();
 }
 
-// one key or mouse button changed
+//one key or mouse button changed
 static int key_event(int key, int down)
 {
   if (key == TK_NONE)
@@ -505,7 +504,7 @@ static void mouse(LPARAM lp, int is_down)
     return;
   int x, y;
   if (is_full())
-  { // the touch screen is the right half
+  { //the touch screen is the right half
     x = ((short)LOWORD(lp) - dst_x) * 512 / dst_w - 256;
     y = ((short)HIWORD(lp) - dst_y) * 192 / dst_h;
   }
@@ -526,11 +525,11 @@ static void mouse(LPARAM lp, int is_down)
   }
 }
 
-static void gl_shutdown(void); // defined with the OpenGL code below
+static void gl_shutdown(void); //defined with the OpenGL code below
 
-// A volume key (the knob on some keyboards) changes the Windows volume. It is only written to the
-// log, so a freeze can be matched to the moment of a turn. At most one line per 150 ms: a fast
-// spin of the knob sends many. Window thread only. The key still does what it did before
+//a volume key (the knob on some keyboards) changes the Windows volume. It is only written to the
+//log, so a freeze can be matched to the moment of a turn. At most one line per 150 ms: a fast
+//spin of the knob sends many. Window thread only. The key still does what it did before
 static void note_volume_key(const char* what)
 {
   static ULONGLONG last;
@@ -548,14 +547,14 @@ static LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
   case WM_CLOSE:
   case WM_DESTROY:
     log_msg("window", "closing");
-    save_write_pending(); // keep progress made in the last half second
+    save_write_pending(); //keep progress made in the last half second
     gl_shutdown();
-    display_restore(); // the desktop must get its display mode back
+    display_restore(); //the desktop must get its display mode back
     log_flush();
     ExitProcess(0);
   case WM_APPCOMMAND:
-    // sent when Windows turns a media key into a command. Only noted: the break below hands it
-    // to DefWindowProcW, which passes it on, so the shell still changes the volume
+    //sent when Windows turns a media key into a command. Only noted: the break below hands it
+    //to DefWindowProcW, which passes it on, so the shell still changes the volume
     if (GET_APPCOMMAND_LPARAM(lp) == APPCOMMAND_VOLUME_UP)
       note_volume_key("up");
     else if (GET_APPCOMMAND_LPARAM(lp) == APPCOMMAND_VOLUME_DOWN)
@@ -572,16 +571,16 @@ static LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
       note_volume_key("mute");
     if (wp == VK_F11 || (wp == VK_ESCAPE && is_full()))
     {
-      if (!(lp & (1 << 30))) // holding the key must not spin through the modes
+      if (!(lp & (1 << 30))) //holding the key must not spin through the modes
         set_mode(wp == VK_F11 ? winmode_next(window_mode) : WINMODE_WINDOWED, 0);
       return 0;
     }
     key_event(key_from_event(wp, lp), 1);
     return 0;
   case WM_ACTIVATEAPP:
-    // Fullscreen owns the display, like a game on the old exclusive way: when another program
-    // comes in front, the desktop gets its mode back and the game minimizes. When the game is
-    // chosen again it takes the display back. Windowed and borderless need none of this
+    //fullscreen owns the display, like a game on the old exclusive way: when another program
+    //comes in front, the desktop gets its mode back and the game minimizes. When the game is
+    //chosen again it takes the display back. Windowed and borderless need none of this
     if (window_mode == WINMODE_FULLSCREEN)
     {
       log_quiet(1.0);
@@ -601,13 +600,13 @@ static LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         }
         else
         {
-          set_mode(WINMODE_BORDERLESS, 0); // Windows refused: keep playing, borderless
+          set_mode(WINMODE_BORDERLESS, 0); //Windows refused: keep playing, borderless
         }
       }
     }
     return 0;
   case WM_KILLFOCUS:
-    release_all_keys(); // a key released in another window would never send its up event here
+    release_all_keys(); //a key released in another window would never send its up event here
     log_msg("window", "lost focus");
     return 0;
   case WM_SETFOCUS:
@@ -640,8 +639,8 @@ static LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
   case WM_ERASEBKGND:
     return 1;
   case WM_KEYUP:
-    // release also for the game (it could have been pressed before the menu opened)
-    // also release for the game: the key may have been pressed before the menu opened
+    //release also for the game (it could have been pressed before the menu opened)
+    //also release for the game: the key may have been pressed before the menu opened
     key_event(key_from_event(wp, lp), 0);
     return 0;
   case WM_LBUTTONDOWN:
@@ -657,7 +656,7 @@ static LRESULT CALLBACK proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     mouse(lp, 0);
     return 0;
   case WM_PAINT:
-  { // painted by paint_thread (here, on the game thread, nothing is waited for)
+  { //painted by paint_thread (here, on the game thread, nothing is waited for)
     PAINTSTRUCT ps;
     BeginPaint(h, &ps);
     EndPaint(h, &ps);
@@ -675,7 +674,7 @@ static int64_t clock(void)
   return t.QuadPart;
 }
 
-// the newest image whose time has come (and the painter keeps it). -1 if there is none
+//the newest image whose time has come (and the painter keeps it). -1 if there is none
 static int pick_frame(void)
 {
   int64_t ya = clock();
@@ -690,13 +689,13 @@ static int pick_frame(void)
   return best;
 }
 
-// ---- OpenGL ----
+//---- OpenGL ----
 static GLuint tex_game;
 static int tex_w, tex_h;
 
-// orderly OpenGL shutdown. the paint thread owns the context and sits in the driver's vsync wait,
-// so calling ExitProcess under it made the driver unwind during process kill (about 5 s on close)
-// the paint thread releases the context itself and the closing code waits for that, at most 3 s
+//orderly OpenGL shutdown. the paint thread owns the context and sits in the driver's vsync wait,
+//so calling ExitProcess under it made the driver unwind during process kill (about 5 s on close)
+//the paint thread releases the context itself and the closing code waits for that, at most 3 s
 static HGLRC gl_rc;
 static volatile LONG gl_closing;
 static volatile LONG gl_active;
@@ -724,7 +723,7 @@ static int gl_init(HDC dc)
   typedef BOOL(WINAPI * Interval)(int);
   Interval interval = (Interval)(void*)wglGetProcAddress("wglSwapIntervalEXT");
   if (!interval || !interval(1))
-    return 0; // without sync to the monitor it is not worth it
+    return 0; //without sync to the monitor it is not worth it
   glGenTextures(1, &tex_game);
   return 1;
 }
@@ -743,8 +742,8 @@ static void gl_rect(float x, float y, float w, float h, float u0, float v0, floa
   glEnd();
 }
 
-// ---- The toast with OpenGL: the text is drawn once with GDI into a small image, which becomes a
-// texture and is drawn as one more rectangle over the game, with the fade as its opacity ----
+//---- The toast with OpenGL: the text is drawn once with GDI into a small image, which becomes a
+//texture and is drawn as one more rectangle over the game, with the fade as its opacity ----
 static GLuint tex_toast;
 static int toast_built_serial = -1, toast_built_px, toast_w, toast_h;
 
@@ -760,7 +759,7 @@ static void toast_build(const wchar_t* text, int px)
   memset(&info, 0, sizeof info);
   info.bmiHeader.biSize = sizeof info.bmiHeader;
   info.bmiHeader.biWidth = w;
-  info.bmiHeader.biHeight = -h; // top to bottom
+  info.bmiHeader.biHeight = -h; //top to bottom
   info.bmiHeader.biPlanes = 1;
   info.bmiHeader.biBitCount = 32;
   info.bmiHeader.biCompression = BI_RGB;
@@ -778,7 +777,7 @@ static void toast_build(const wchar_t* text, int px)
     TextOutW(dc, pad, pad / 2, text, (int)wcslen(text));
     GdiFlush();
     for (int k = 0; k < w * h; k++)
-      bits[k] |= 0xFF000000u; // GDI leaves the alpha empty: make every pixel solid
+      bits[k] |= 0xFF000000u; //GDI leaves the alpha empty: make every pixel solid
     if (!tex_toast)
     {
       glGenTextures(1, &tex_toast);
@@ -844,7 +843,7 @@ static void gl_paint(HDC dc, int i, int upload)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     GLint filter = e > 1
                        ? GL_LINEAR
-                       : GL_NEAREST; // with rescale it is reduced: smooth. Without it, sharp pixels
+                       : GL_NEAREST; //with rescale it is reduced: smooth. Without it, sharp pixels
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, iw, ih, 0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, px);
@@ -871,7 +870,7 @@ static void gl_paint(HDC dc, int i, int upload)
   int side = is_full();
   LeaveCriticalSection(&cs_gdi);
   if (side)
-  { // top screen on the left, touch on the right
+  { //top screen on the left, touch on the right
     gl_rect(x, y, w / 2, h, 0, 0, 1, 0.5f);
     gl_rect(x + w / 2, y, w / 2, h, 0, 0.5f, 1, 1);
   }
@@ -880,7 +879,7 @@ static void gl_paint(HDC dc, int i, int upload)
     gl_rect(x, y, w, h, 0, 0, 1, 1);
   }
   toast_draw_gl(r.right, r.bottom);
-  SwapBuffers(dc); // waits for the monitor refresh
+  SwapBuffers(dc); //waits for the monitor refresh
 }
 
 static DWORD WINAPI paint_thread(LPVOID p)
@@ -901,7 +900,7 @@ static DWORD WINAPI paint_thread(LPVOID p)
   for (;;)
   {
     if (gl && gl_closing)
-    { // close requested: let go of the context from this thread
+    { //close requested: let go of the context from this thread
       glFinish();
       wglMakeCurrent(NULL, NULL);
       wglDeleteContext(gl_rc);
@@ -942,9 +941,9 @@ static DWORD WINAPI paint_thread(LPVOID p)
   }
 }
 
-// The window lives on its own thread. While the user drags the title bar Windows runs a loop inside
-// the thread that owns the window. If that were the game thread, the game and its sound would stop
-// until the drop
+//the window lives on its own thread. While the user drags the title bar Windows runs a loop inside
+//the thread that owns the window. If that were the game thread, the game and its sound would stop
+//until the drop
 static HANDLE ev_window_up;
 static DWORD WINAPI window_thread(LPVOID p)
 {
@@ -961,8 +960,8 @@ static DWORD WINAPI window_thread(LPVOID p)
   window = CreateWindowExW(0, L"driftds", L"DriftDS", style, CW_USEDEFAULT, CW_USEDEFAULT,
                            r.right - r.left, r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
   ShowWindow(window, SW_SHOW);
-  // WINDOW_MODE in settings.ini picks the start-up mode. The old FULLSCREEN=1 still works: it
-  // means borderless fullscreen, what the game did before there were three modes
+  //WINDOW_MODE in settings.ini picks the start-up mode. The old FULLSCREEN=1 still works: it
+  //means borderless fullscreen, what the game did before there were three modes
   const char* size_text = getenv("DRIFT_FULLSCREEN_SIZE");
   if (size_text && *size_text && !winmode_parse_size(size_text, &want_full_w, &want_full_h))
     log_msg("window", "FULLSCREEN_SIZE \"%s\" is not like 1280x720: using the desktop size",
@@ -990,7 +989,7 @@ static DWORD WINAPI window_thread(LPVOID p)
 
 void window_init(void)
 {
-  build_key_table(); // bindings load from the environment on first use
+  build_key_table(); //bindings load from the environment on first use
   update_keyboard();
   InitializeCriticalSection(&cs_frames);
   InitializeCriticalSection(&cs_gdi);
@@ -1001,7 +1000,7 @@ void window_init(void)
   WaitForSingleObject(ev_window_up, INFINITE);
   bmi.bmiHeader.biSize = sizeof bmi.bmiHeader;
   bmi.bmiHeader.biWidth = 256;
-  bmi.bmiHeader.biHeight = -384; // top to bottom
+  bmi.bmiHeader.biHeight = -384; //top to bottom
   bmi.bmiHeader.biPlanes = 1;
   bmi.bmiHeader.biBitCount = 32;
   bmi.bmiHeader.biCompression = BI_RGB;
@@ -1016,11 +1015,11 @@ void window_init(void)
   bmi_side_hd.bmiHeader.biWidth = 512 * e;
   bmi_side_hd.bmiHeader.biHeight = -192 * e;
   HANDLE h = CreateThread(NULL, 0, paint_thread, NULL, 0, NULL);
-  SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL); // the game (and its music) first
+  SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL); //the game (and its music) first
   CloseHandle(h);
 }
 
-// a free image of the queue (never the one the painter is showing)
+//a free image of the queue (never the one the painter is showing)
 static Frame* reserve(void)
 {
   EnterCriticalSection(&cs_frames);
@@ -1052,7 +1051,7 @@ void window_show(const uint32_t* up, const uint32_t* bottom)
   window_show_en(up, bottom, 0);
 }
 
-// a game image. ts = when to show it (0 = now)
+//a game image. ts = when to show it (0 = now)
 void window_show_en(const uint32_t* up, const uint32_t* bottom, int64_t ts)
 {
   Frame* m = reserve();
@@ -1069,7 +1068,7 @@ void window_show_en(const uint32_t* up, const uint32_t* bottom, int64_t ts)
   publish(ts ? ts : clock());
 }
 
-// Gamepad: added to what is pressed on the keyboard
+//Gamepad: added to what is pressed on the keyboard
 static void read_pad(uint16_t* in, uint16_t* xy, int* combo)
 {
   *in = 0x3FF;
@@ -1102,9 +1101,9 @@ static void read_pad(uint16_t* in, uint16_t* xy, int* combo)
       if (m[k].is_down)
         *in &= (uint16_t)~(1u << m[k].bit);
     if (b & XINPUT_GAMEPAD_Y)
-      *xy &= ~1; // by position, like the DS (and like the PlayStation ones): up = X
+      *xy &= ~1; //by position, like the DS (and like the PlayStation ones): up = X
     if (b & XINPUT_GAMEPAD_X)
-      *xy &= ~2; // left = Y
+      *xy &= ~2; //left = Y
     if ((b & XINPUT_GAMEPAD_LEFT_THUMB) && (b & XINPUT_GAMEPAD_RIGHT_THUMB))
       *combo = 1;
   }
@@ -1119,7 +1118,7 @@ void window_messages(void)
   g_keyxy = (uint16_t)(keyboard_xy & pad_xy);
 }
 
-// FPS counter in the window title
+//FPS counter in the window title
 int window_title_fps(int fps, int fps3d)
 {
   int screen = (int)InterlockedExchange(&pictures_shown, 0);

@@ -1,4 +1,4 @@
-// keys.c: implementation of the key bindings. see keys.h for the role and the design choices
+//keys.c: implementation of the key bindings. see keys.h for the role and the design choices
 #include "keys.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +14,7 @@ static const char* const BUTTON_NAMES[BTN_COUNT] = {
 
 static const char* const PRESET_NAMES[PRESET_COUNT] = {"wasd", "classic"};
 
-// compare two texts ignoring case. returns 1 when equal
+//compare two texts ignoring case. returns 1 when equal
 static int same_text(const char* a, const char* b)
 {
   for (; *a && *b; a++, b++)
@@ -88,7 +88,7 @@ int bind_set(Bindings* b, DsButton button, int slot, int key)
 {
   if (!valid_slot(button, slot) || key <= TK_NONE || key >= TK_COUNT)
     return 0;
-  // the key leaves every other slot first. newest binding wins
+  //the key leaves every other slot first. newest binding wins
   for (int i = 0; i < BTN_COUNT; i++)
     for (int s = 0; s < BIND_SLOTS; s++)
       if (b->key[i][s] == key)
@@ -107,12 +107,12 @@ void bind_format(const Bindings* b, DsButton button, char* out, size_t size)
   const char* first = key_name(b->key[button][0]);
   const char* second = key_name(b->key[button][1]);
   if (*second)
-    snprintf(out, size, "%s,%s", first, second); // empty first slot keeps its place: ",Enter"
+    snprintf(out, size, "%s,%s", first, second); //empty first slot keeps its place: ",Enter"
   else
     snprintf(out, size, "%s", first);
 }
 
-// split "W,Enter" and set slot 1 and slot 2. an empty or unknown token leaves its slot empty
+//split "W,Enter" and set slot 1 and slot 2. an empty or unknown token leaves its slot empty
 int bind_parse(Bindings* b, DsButton button, const char* text)
 {
   if (button < 0 || button >= BTN_COUNT)
@@ -129,7 +129,7 @@ int bind_parse(Bindings* b, DsButton button, const char* text)
       length = sizeof token - 1;
     memcpy(token, text, length);
     token[length] = 0;
-    // trim spaces on both sides
+    //trim spaces on both sides
     char* start = token;
     while (*start == ' ')
       start++;
@@ -149,17 +149,17 @@ typedef struct
   const char* keys;
 } PresetRow;
 
-// racing layout. W accelerates and S brakes. A and D steer with the arrows as a second option
-// Space drifts. Shift throws the item. Shift + Up arrow throws it forward (the game reads L +
-// d-pad)
+//racing layout. W accelerates and S brakes. A and D steer with the arrows as a second option
+//Space drifts. Shift throws the item. Shift + Up arrow throws it forward (the game reads L +
+//d-pad)
 static const PresetRow WASD[] = {
     {BTN_A, "W,Enter"},       {BTN_B, "S,Backspace"}, {BTN_X, "E"},         {BTN_Y, "Q"},
     {BTN_L, "LShift,RShift"}, {BTN_R, "Space"},       {BTN_START, "Tab"},   {BTN_SELECT, "RCtrl"},
     {BTN_UP, "Up"},           {BTN_DOWN, "Down"},     {BTN_LEFT, "A,Left"}, {BTN_RIGHT, "D,Right"},
 };
 
-// the layout of the first port: arrows for the d-pad and X Z S A Q W for the face and shoulder
-// buttons
+//the layout of the first port: arrows for the d-pad and X Z S A Q W for the face and shoulder
+//buttons
 static const PresetRow CLASSIC[] = {
     {BTN_A, "X"},   {BTN_B, "Z"},       {BTN_X, "S"},         {BTN_Y, "A"},
     {BTN_L, "Q"},   {BTN_R, "W"},       {BTN_START, "Enter"}, {BTN_SELECT, "Backspace"},
@@ -185,11 +185,11 @@ void bind_load(Bindings* b, SettingGetter get)
     snprintf(name, sizeof name, "KEY_%s", BUTTON_NAMES[i]);
     const char* value = get(name);
     if (value)
-      bind_parse(b, (DsButton)i, value); // a present line wins, even an empty one
+      bind_parse(b, (DsButton)i, value); //a present line wins, even an empty one
   }
 }
 
-// settings.ini lines reach the game as DRIFT_<KEY> environment variables (read_settings in main.c)
+//settings.ini lines reach the game as DRIFT_<KEY> environment variables (read_settings in main.c)
 static const char* env_getter(const char* name)
 {
   char variable[40];
@@ -220,6 +220,6 @@ uint16_t bind_pressed_mask(const Bindings* b, const uint8_t down[TK_COUNT])
   uint16_t mask = 0;
   for (int i = 0; i < BTN_COUNT; i++)
     if (down[b->key[i][0]] || down[b->key[i][1]])
-      mask |= (uint16_t)(1u << i); // down[TK_NONE] is always 0
+      mask |= (uint16_t)(1u << i); //down[TK_NONE] is always 0
   return mask;
 }

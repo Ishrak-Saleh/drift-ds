@@ -1,21 +1,21 @@
-// test_gpuraster.c: draws recorded scenes with the GPU and compares them with the CPU picture.
+//test_gpuraster.c: draws recorded scenes with the GPU and compares them with the CPU picture.
 //
-// Usage: test_gpuraster [-r] [-v] [-d dir] scenes/scene-A-001.dscn scenes/scene-A-002.dscn ...
-//   -r       use the CPU oracle (raster_ref.h) as the reference, not the picture stored in the file
-//            (needed for files recorded with the GPU drawing live: they hold the GPU picture)
-//   -v       list the first differing pixels of each failing scene
-//   -d dir   also writes a bitmap per scene into dir that shows the differences
-//            (grey = equal, green = rounding, blue = edge, red = differing, yellow = transparency)
-// Build from the project folder:
-//   clang -O2 -Iruntime -Itests tests/test_gpuraster.c tests/scenecmp.c runtime/gpuraster.c \
-//     runtime/texdecode.c runtime/scenedump.c runtime/glctx.c runtime/glload.c -lopengl32 -lgdi32 \
-//     -luser32 -o tests/test_gpuraster.exe
-// What it does: for each scene it makes the hidden OpenGL context once, draws the polygon list
-// with gpuraster.c, and scores the result against the picture the CPU drawing stored in the file
-// (rule in scenecmp.h: 0.1 percent of the pixels, no more than 3 colour steps, no transparency
-// mistakes, edges not counted). Exit code 0 when every scene passes.
-// Why: this is the check for the GPU drawing. The files hold game data: keep the bitmaps out of
-// git.
+//Usage: test_gpuraster [-r] [-v] [-d dir] scenes/scene-A-001.dscn scenes/scene-A-002.dscn ...
+//  -r       use the CPU oracle (raster_ref.h) as the reference, not the picture stored in the file
+//           (needed for files recorded with the GPU drawing live: they hold the GPU picture)
+//  -v       list the first differing pixels of each failing scene
+//  -d dir   also writes a bitmap per scene into dir that shows the differences
+//           (grey = equal, green = rounding, blue = edge, red = differing, yellow = transparency)
+//build from the project folder:
+//  clang -O2 -Iruntime -Itests tests/test_gpuraster.c tests/scenecmp.c runtime/gpuraster.c \
+//    runtime/texdecode.c runtime/scenedump.c runtime/glctx.c runtime/glload.c -lopengl32 -lgdi32 \
+//    -luser32 -o tests/test_gpuraster.exe
+//what it does: for each scene it makes the hidden OpenGL context once, draws the polygon list
+//with gpuraster.c, and scores the result against the picture the CPU drawing stored in the file
+//(rule in scenecmp.h: 0.1 percent of the pixels, no more than 3 colour steps, no transparency
+//mistakes, edges not counted). Exit code 0 when every scene passes.
+//why: this is the check for the GPU drawing. The files hold game data: keep the bitmaps out of
+//git.
 #include "glctx.h"
 #include "raster_ref.h"
 #include "gpuraster.h"
@@ -99,13 +99,13 @@ int main(int argc, char** argv)
   const char* diff_dir = NULL;
   int first = 1, verbose = 0, use_ref = 0;
   if (argc > 1 && strcmp(argv[1], "-r") == 0)
-  { // the reference is drawn by the copied CPU rasterizer
+  { //the reference is drawn by the copied CPU rasterizer
     use_ref = 1;
     argv++;
     argc--;
   }
   if (argc > 1 && strcmp(argv[1], "-v") == 0)
-  { // list the first differing pixels of each scene
+  { //list the first differing pixels of each scene
     verbose = 1;
     argv++;
     argc--;
@@ -194,7 +194,7 @@ int main(int argc, char** argv)
           printf("    at %d,%d  cpu %02X %02X %02X a%2d   gpu %02X %02X %02X a%2d\n", i % w, i / w,
                  s.color[i] & 31, s.color[i] >> 5 & 31, s.color[i] >> 10 & 31, s.alpha[i],
                  c[i] & 31, c[i] >> 5 & 31, c[i] >> 10 & 31, al[i]);
-          int nearby = 0; // does the GPU colour equal a neighbour of the CPU picture?
+          int nearby = 0; //does the GPU colour equal a neighbour of the CPU picture?
           for (int dy = -1; dy <= 1; dy++)
             for (int dx = -1; dx <= 1; dx++)
             {

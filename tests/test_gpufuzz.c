@@ -1,18 +1,18 @@
-// test_gpufuzz.c: draws random scenes with the GPU and with the old CPU rasterizer and compares.
+//test_gpufuzz.c: draws random scenes with the GPU and with the old CPU rasterizer and compares.
 //
-// Usage:
-//   test_gpufuzz oracle scenes/*.dscn      the oracle must reproduce every recorded CPU picture
-//   test_gpufuzz [-v] FIRST_SEED COUNT     draws COUNT random scenes, seeds FIRST_SEED and up
-// Build from the project folder:
-//   clang -O2 -Iruntime -Itests tests/test_gpufuzz.c tests/scenecmp.c runtime/gpuraster.c \
-//     runtime/texdecode.c runtime/scenedump.c runtime/glctx.c runtime/glload.c -lopengl32 -lgdi32 \
-//     -luser32 -o tests/test_gpufuzz.exe
-// What it does: the recorded scenes only use some of the drawing features (no Z buffer, no decal,
-// no toon, no equal-depth polygons). A random scene mixes all of them: Z or W buffer, the three
-// polygon modes, all texture formats with every wrap setting, translucency, alpha test, the
-// equal-depth window and the polygon id rule. The oracle is raster_ref.h, a copy of the CPU
-// rasterizer. The same rule as for the recorded scenes (scenecmp.h) decides pass or fail.
-// A failing seed can be run again alone to see the same scene: test_gpufuzz -v SEED 1.
+//Usage:
+//  test_gpufuzz oracle scenes/*.dscn      the oracle must reproduce every recorded CPU picture
+//  test_gpufuzz [-v] FIRST_SEED COUNT     draws COUNT random scenes, seeds FIRST_SEED and up
+//build from the project folder:
+//  clang -O2 -Iruntime -Itests tests/test_gpufuzz.c tests/scenecmp.c runtime/gpuraster.c \
+//    runtime/texdecode.c runtime/scenedump.c runtime/glctx.c runtime/glload.c -lopengl32 -lgdi32 \
+//    -luser32 -o tests/test_gpufuzz.exe
+//what it does: the recorded scenes only use some of the drawing features (no Z buffer, no decal,
+//no toon, no equal-depth polygons). A random scene mixes all of them: Z or W buffer, the three
+//polygon modes, all texture formats with every wrap setting, translucency, alpha test, the
+//equal-depth window and the polygon id rule. The oracle is raster_ref.h, a copy of the CPU
+//rasterizer. The same rule as for the recorded scenes (scenecmp.h) decides pass or fail.
+//A failing seed can be run again alone to see the same scene: test_gpufuzz -v SEED 1.
 #include "glctx.h"
 #include "raster_ref.h"
 #include "scenecmp.h"
@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ---- random numbers (xorshift, the same on every machine) ----
+//---- random numbers (xorshift, the same on every machine) ----
 static uint64_t rng_state;
 static uint32_t rnd(void)
 {
@@ -30,7 +30,7 @@ static uint32_t rnd(void)
   rng_state ^= rng_state << 17;
   return (uint32_t)(rng_state >> 16);
 }
-static int rint_(int lo, int hi) // lo..hi
+static int rint_(int lo, int hi) //lo..hi
 {
   return lo + (int)(rnd() % (uint32_t)(hi - lo + 1));
 }
@@ -43,7 +43,7 @@ static int chance(int percent)
   return (int)(rnd() % 100) < percent;
 }
 
-// ---- a random scene ----
+//---- a random scene ----
 typedef struct
 {
   uint8_t io[0x400];
@@ -51,7 +51,7 @@ typedef struct
   uint8_t* pal[6];
   Poly* polys;
   int npolys, scale, wbuf, vp[4];
-  int features[8]; // for the report: what the scene used
+  int features[8]; //for the report: what the scene used
 } Fuzz;
 
 enum
@@ -81,7 +81,7 @@ static void fuzz_make(Fuzz* f, uint64_t seed)
   f->vp[2] = 255;
   f->vp[3] = 191;
   if (chance(20))
-  { // a smaller viewport
+  { //a smaller viewport
     f->vp[0] = rint_(0, 60);
     f->vp[1] = rint_(0, 40);
     f->vp[2] = rint_(150, 255);
@@ -95,7 +95,7 @@ static void fuzz_make(Fuzz* f, uint64_t seed)
   uint32_t clear =
       (uint32_t)rint_(0, 0x7FFF) | (uint32_t)rint_(0, 31) << 16 | (uint32_t)rint_(0, 63) << 24;
   if (chance(60))
-    clear &= ~(31u << 16); // usually a transparent background
+    clear &= ~(31u << 16); //usually a transparent background
   for (int i = 0; i < 4; i++)
     f->io[0x350 + i] = (uint8_t)(clear >> (8 * i));
   uint32_t cd = chance(70) ? 0x7FFF : (uint32_t)rint_(0, 0x7FFF);
@@ -131,7 +131,7 @@ static void fuzz_make(Fuzz* f, uint64_t seed)
     float rad = chance(20) ? rf(0.5f, 1.5f) : rf(0.04f, 0.5f);
     float w0 = rf(0.6f, 25.0f), zn = rf(-0.95f, 0.95f);
     int fmt = chance(15) ? 0 : rint_(1, 7);
-    int wexp = rint_(0, 4), hexp = rint_(0, 4); // 8 to 128 texels
+    int wexp = rint_(0, 4), hexp = rint_(0, 4); //8 to 128 texels
     uint32_t ti = (uint32_t)rint_(0, 0xFFFF) | (uint32_t)rint_(0, 15) << 16 | (uint32_t)wexp << 20 |
                   (uint32_t)hexp << 23 | (uint32_t)fmt << 26 | (uint32_t)(chance(40) ? 1 : 0) << 29;
     int alpha = chance(70) ? 31 : rint_(1, 30);
@@ -159,7 +159,7 @@ static void fuzz_make(Fuzz* f, uint64_t seed)
       v->r = rf(0, 31);
       v->g = rf(0, 31);
       v->b = rf(0, 31);
-      // texture coordinates follow the position, so the picture is a real mapping
+      //texture coordinates follow the position, so the picture is a real mapping
       v->s = (nx - cx) / rad * tw * 1.5f + tw * 0.5f;
       v->t = (ny - cy) / rad * th * 1.5f + th * 0.5f;
     }
@@ -179,9 +179,9 @@ static void fuzz_make(Fuzz* f, uint64_t seed)
   f->features[F_HIGHLIGHT] = (disp3d >> 1) & 1;
 }
 
-// Is the centre of pixel (px, py) within `tol` pixels of an edge of any polygon, on screen? The CPU
-// rasterizer draws a pixel whose centre is up to about 0.01 pixel outside a triangle, the graphics
-// card follows its own fill rule, so on such a pixel either answer is right.
+//is the centre of pixel (px, py) within `tol` pixels of an edge of any polygon, on screen? The CPU
+//rasterizer draws a pixel whose centre is up to about 0.01 pixel outside a triangle, the graphics
+//card follows its own fill rule, so on such a pixel either answer is right.
 static int near_polygon_edge(const Fuzz* f, int scale, int px, int py, float tol)
 {
   float vw = (float)(f->vp[2] - f->vp[0] + 1), vh = (float)(f->vp[3] - f->vp[1] + 1);
@@ -236,7 +236,7 @@ static void to_gpu_scene(const Fuzz* f, GpuScene* gs)
     gs->mem.pal[q] = f->pal[q];
 }
 
-// ---- modes ----
+//---- modes ----
 
 static int mode_oracle(int argc, char** argv)
 {
@@ -280,7 +280,7 @@ static int mode_oracle(int argc, char** argv)
   return bad ? 1 : 0;
 }
 
-// probe SEED X Y: finds the first polygon (in list order) after which pixel X,Y differs
+//probe SEED X Y: finds the first polygon (in list order) after which pixel X,Y differs
 static int mode_probe(int argc, char** argv)
 {
   uint64_t seed = (uint64_t)strtoull(argv[2], NULL, 10);
@@ -372,11 +372,11 @@ int main(int argc, char** argv)
     GpuScene gs;
     to_gpu_scene(&f, &gs);
     ref_draw(&gs, sc, rc, ra);
-    // the same scene with texture coordinates, depth and colours nudged by 0.001 percent: a pixel
-    // that changes between the two oracle pictures is on a precision knife edge (a texel boundary
-    // or a depth tie), so the GPU may legitimately land on the other side
+    //the same scene with texture coordinates, depth and colours nudged by 0.001 percent: a pixel
+    //that changes between the two oracle pictures is on a precision knife edge (a texel boundary
+    //or a depth tie), so the GPU may legitimately land on the other side
     uint8_t* unstable = calloc((size_t)w * h, 1);
-    for (int sign = -1; sign <= 1; sign += 2) // nudged one way, then the other
+    for (int sign = -1; sign <= 1; sign += 2) //nudged one way, then the other
     {
       Poly* np = malloc((size_t)f.npolys * sizeof(Poly));
       memcpy(np, f.polys, (size_t)f.npolys * sizeof(Poly));
@@ -384,8 +384,8 @@ int main(int argc, char** argv)
         for (int i = 0; i < np[k2].n; i++)
         {
           Vert* v = &np[k2].v[i];
-          // the graphics card snaps screen positions to a fine grid (1/256 pixel or so): a jitter
-          // of about 1/40 pixel covers that
+          //the graphics card snaps screen positions to a fine grid (1/256 pixel or so): a jitter
+          //of about 1/40 pixel covers that
           float jx = (float)(((k2 * 7 + i * 13) % 5) - 2) * 0.5f;
           float jy = (float)(((k2 * 11 + i * 5) % 5) - 2) * 0.5f;
           float up = 1.0f + (float)sign * 1e-4f;
@@ -424,7 +424,7 @@ int main(int argc, char** argv)
       total += r.total;
       for (int i = 0; i < 8; i++)
         used[i] += f.features[i];
-      // a pixel that is off and not explained by a knife edge is a real mistake
+      //a pixel that is off and not explained by a knife edge is a real mistake
       int wrong = 0, knife = 0;
       for (int i = 0; i < w * h; i++)
         if (diff[i] == 3 || diff[i] == 4)
@@ -432,7 +432,7 @@ int main(int argc, char** argv)
           if (unstable[i] || near_polygon_edge(&f, sc, i % w, i / w, 0.05f))
           {
             knife++;
-            diff[i] = 5; // shown as excused
+            diff[i] = 5; //shown as excused
           }
           else
             wrong++;

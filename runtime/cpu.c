@@ -1,4 +1,4 @@
-// Dispatch of computed jumps, processor modes and the CP15 coprocessor.
+//Dispatch of computed jumps, processor modes and the CP15 coprocessor.
 #include "ds.h"
 #include "region.h"
 #include "log.h"
@@ -19,8 +19,8 @@ static Func search(const FuncEntry* table_data, size_t n, uint32_t key)
   return lo < n && table_data[lo].key == key ? table_data[lo].fn : NULL;
 }
 
-// FNV-1a hash of the 16 words at an address. must give the same value as signature_long in
-// tools/armc/recompiler.py
+//FNV-1a hash of the 16 words at an address. must give the same value as signature_long in
+//tools/armc/recompiler.py
 static uint32_t signature_long(uint32_t a)
 {
   uint32_t hash = 2166136261u;
@@ -32,11 +32,11 @@ static uint32_t signature_long(uint32_t a)
   return hash ? hash : 1;
 }
 
-// Looks in the overlays for the function whose signature matches what is in memory
-// finds the overlay function whose signature matches memory
-// most functions exist in one overlay only and the short signature is enough
-// when signature2 is not 0 the same address and signature exist in another overlay, so the long
-// hash decides if no hash matches memory the first candidate is used, as before
+//looks in the overlays for the function whose signature matches what is in memory
+//finds the overlay function whose signature matches memory
+//most functions exist in one overlay only and the short signature is enough
+//when signature2 is not 0 the same address and signature exist in another overlay, so the long
+//hash decides if no hash matches memory the first candidate is used, as before
 static Func search_ov(uint32_t key)
 {
   uint32_t a = key & ~1u;
@@ -69,8 +69,8 @@ static Func search_ov(uint32_t key)
   return first_one;
 }
 
-// The last computed jumps of the ARM9 (from which function, to where, r14 and r13), to understand a
-// "missing code"
+//the last computed jumps of the ARM9 (from which function, to where, r14 and r13), to understand a
+//"missing code"
 static struct
 {
   uint32_t from, a, lr, sp;
@@ -93,7 +93,7 @@ void dispatch(Cpu* c, uint32_t t)
   f(c);
 }
 
-// print the last computed jumps of the ARM9 to o. used by the fault dump in main.c
+//print the last computed jumps of the ARM9 to o. used by the fault dump in main.c
 void cpu_dump_jumps(FILE* o)
 {
   fprintf(o, "    last computed jumps (from -> to, r14, r13):\n");
@@ -131,7 +131,7 @@ static void dump(Cpu* c)
   dump_a(stderr, c);
 }
 
-// dump of a missing function, written to the console and to the log file
+//dump of a missing function, written to the console and to the log file
 static void missing_a(FILE* o, Cpu* c, uint32_t addr)
 {
   fprintf(o, "\n[cpu] missing translated code of the %s at %08X (%s)\n", c->id ? "ARM7" : "ARM9",
@@ -150,7 +150,7 @@ static void missing_a(FILE* o, Cpu* c, uint32_t addr)
   fprintf(o, "\n");
 }
 
-// Where a missing function is noted so that the next translation includes it
+//where a missing function is noted so that the next translation includes it
 static const char* entry_list_for(Cpu* c)
 {
   if (c->id)
@@ -165,7 +165,7 @@ _Noreturn void cpu_missing(Cpu* c, uint32_t addr)
   missing_a(stderr, c, addr);
   if (lf)
     missing_a(lf, c, addr);
-  if (addr & ~1u) // jumping to address 0 is a fault, not missing code
+  if (addr & ~1u) //jumping to address 0 is a fault, not missing code
   {
     const char* advice = "  to fix: add %s%08X to %s and translate again\n";
     fprintf(stderr, advice, (addr & 1) ? "T:" : "", addr & ~1u, entry_list_for(c));
@@ -192,11 +192,11 @@ _Noreturn void cpu_undefined(Cpu* c, uint32_t addr, uint32_t op)
   exit(3);
 }
 
-// Each mode (IRQ, SVC...) has its own stack (r13), r14 and SPSR.
+//each mode (IRQ, SVC...) has its own stack (r13), r14 and SPSR.
 static int bank(uint32_t mode)
 {
   int m = mode & 15;
-  return m == 15 ? 0 : m; // user and system share registers
+  return m == 15 ? 0 : m; //user and system share registers
 }
 
 static void change_mode(Cpu* c, uint32_t new)
@@ -262,16 +262,16 @@ void cpu_set_cpsr(Cpu* c, uint32_t v)
   set_cpsr(c, v);
 }
 
-// ---- CP15 ------------------------------------------------------------------
+//---- CP15 ------------------------------------------------------------------
 static uint32_t cp15[16][16][8][8];
 
 uint32_t cp15_read(Cpu* c, int crn, int crm, int op1, int op2)
 {
   (void)c;
   if (crn == 0 && crm == 0 && op2 == 0)
-    return 0x41059461; // ARM946E-S
+    return 0x41059461; //ARM946E-S
   if (crn == 0 && crm == 0 && op2 == 1)
-    return 0x0F0D2112; // cache
+    return 0x0F0D2112; //cache
   return cp15[crn][crm][op1][op2];
 }
 
@@ -279,7 +279,7 @@ void cp15_write(Cpu* c, int crn, int crm, int op1, int op2, uint32_t v)
 {
   cp15[crn][crm][op1][op2] = v;
   if (crn == 9 && crm == 1 && op2 == 0)
-    g_dtcm_base = v & 0xFFFFF000u; // where the DTCM goes
-  if (crn == 7 && ((crm == 0 && op2 == 4) || (crm == 8 && op2 == 2))) // wait for interrupt
+    g_dtcm_base = v & 0xFFFFF000u; //where the DTCM goes
+  if (crn == 7 && ((crm == 0 && op2 == 4) || (crm == 8 && op2 == 2))) //wait for interrupt
     ds_wait(c, -1);
 }

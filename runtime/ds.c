@@ -1,17 +1,17 @@
-// DS hardware for the recompiled code of both processors.
-// Both processors take turns in the same Windows thread (each in its
-// fiber): every certain "budget" (c->cycles) the translated code calls
-// cpu_tick, which looks at the clock, delivers interrupts and lets the other one run.
-// So there are no races between ARM9 and ARM7.
-// Time is the PC's: one VBlank every 1/60 s, timers at 33.5 MHz.
-#include "compat.h" // before cpu.h: its R macro clashes with windows.h
+//DS hardware for the recompiled code of both processors.
+//Both processors take turns in the same Windows thread (each in its
+//fiber): every certain "budget" (c->cycles) the translated code calls
+//cpu_tick, which looks at the clock, delivers interrupts and lets the other one run.
+//So there are no races between ARM9 and ARM7.
+//Time is the PC's: one VBlank every 1/60 s, timers at 33.5 MHz.
+#include "compat.h" //before cpu.h: its R macro clashes with windows.h
 #include "ds.h"
 #include "region.h"
 #include "video.h"
 #include "gpu3d.h"
 #include "log.h"
 
-// sound.c
+//sound.c
 void sound_init(void);
 extern volatile uint32_t g_snd_gen[16];
 uint8_t* ds_io7(void);
@@ -24,36 +24,36 @@ uint8_t g_wramcnt = 3;
 SoConfig g_so[2];
 int g_no_irq[2];
 
-#define CLOCK 33513982.0 // cycles per second of the DS bus
+#define CLOCK 33513982.0 //cycles per second of the DS bus
 #define CYCLES_LINE 2130
 #define LINES 263
 #define CYCLES_FRAME (CYCLES_LINE * LINES)
-#define TURN 20000 // budget between tick and tick
+#define TURN 20000 //budget between tick and tick
 
 typedef struct
 {
-  uint8_t io[0x10000]; // registers stored as they are written
+  uint8_t io[0x10000]; //registers stored as they are written
   uint32_t ie, if_, ime;
   uint16_t dispstat;
   struct
   {
     uint16_t reload, ctl;
-    uint64_t start; // cycle when it started
-    uint64_t overflows; // overflows already announced
-    uint32_t pend; // interrupts still to deliver (if it fired several times between turns)
+    uint64_t start; //cycle when it started
+    uint64_t overflows; //overflows already announced
+    uint32_t pend; //interrupts still to deliver (if it fired several times between turns)
   } tm[4];
-  uint16_t sync; // IPCSYNC: what this processor writes
+  uint16_t sync; //IPCSYNC: what this processor writes
   uint16_t fifocnt;
-  uint32_t queue[16]; // input FIFO (what the other one sends)
+  uint32_t queue[16]; //input FIFO (what the other one sends)
   int n;
-  uint32_t last; // last value read from the FIFO
-  int stopped; // waiting for an interrupt
-  void* fiber; // where this processor continues when its turn comes
+  uint32_t last; //last value read from the FIFO
+  int stopped; //waiting for an interrupt
+  void* fiber; //where this processor continues when its turn comes
 } Hw;
 
 static Hw hw[2];
 static LARGE_INTEGER t0, freq;
-static uint64_t frame_seen; // last VBlank delivered
+static uint64_t frame_seen; //last VBlank delivered
 static int line_seen[2];
 
 static Cpu* cpu_of(int id)
@@ -85,7 +85,7 @@ static void irq(int id, uint32_t bits)
   hw[id].if_ |= bits;
 }
 
-// ---- timers --------------------------------------------------------
+//---- timers --------------------------------------------------------
 static const int prescaler[4] = {1, 64, 256, 1024};
 
 static uint64_t tm_ticks(Hw* h, int n, uint64_t t)
@@ -94,7 +94,7 @@ static uint64_t tm_ticks(Hw* h, int n, uint64_t t)
   if (!(ctl & 0x80))
     return 0;
   if ((ctl & 4) && n > 0)
-  { // cascade: counts overflows of the previous one
+  { //cascade: counts overflows of the previous one
     uint64_t p = 0x10000 - h->tm[n - 1].reload;
     return p ? tm_ticks(h, n - 1, t) / p : 0;
   }
@@ -119,7 +119,7 @@ static void tm_control(Hw* h, int n, uint16_t v, uint64_t t)
   h->tm[n].ctl = v;
 }
 
-// ---- DMA -------------------------------------------------------------------
+//---- DMA -------------------------------------------------------------------
 static void dma_run(int id, int n)
 {
   Hw* h = &hw[id];
@@ -152,7 +152,7 @@ static void dma_run(int id, int n)
     irq(id, 0x100u << n);
 }
 
-// Checks if there are DMAs waiting for the moment `when` and does them
+//checks if there are DMAs waiting for the moment `when` and does them
 static void dma_moment(int id, int when)
 {
   for (int n = 0; n < 4; n++)
@@ -170,7 +170,7 @@ static void dma_written(int id, int n)
   if (!(cnt & 0x80000000))
     return;
   int t = id ? (cnt >> 28) & 3 : (cnt >> 27) & 7;
-  // immediate, and the one of the 3D FIFO (which for now swallows everything)
+  //immediate, and the one of the 3D FIFO (which for now swallows everything)
   if (t == 0 || (!id && t == 7))
     dma_run(id, n);
 }
@@ -185,11 +185,11 @@ static void update(void)
   mic_update(t);
   int line = (int)((t / CYCLES_LINE) % LINES);
   if ((reg32(&hw[0], 0x04000600) >> 30) & 3)
-    irq(0, 1u << 21); // the 3D FIFO is always empty
+    irq(0, 1u << 21); //the 3D FIFO is always empty
   for (int id = 0; id < 2; id++)
   {
     Hw* h = &hw[id];
-    // VCOUNT match
+    //VCOUNT match
     int goal = (h->dispstat >> 8) | ((h->dispstat & 0x80) << 1);
     if ((h->dispstat & 0x20) && line_seen[id] != line)
     {
@@ -198,7 +198,7 @@ static void update(void)
         irq(id, 4);
     }
     line_seen[id] = line;
-    // timers
+    //timers
     for (int n = 0; n < 4; n++)
     {
       if (!(h->tm[n].ctl & 0x80))
@@ -210,10 +210,10 @@ static void update(void)
         if (h->tm[n].ctl & 0x40)
           h->tm[n].pend += (uint32_t)(d - h->tm[n].overflows);
         if (h->tm[n].pend > 16)
-          h->tm[n].pend = 16; // without catching up forever
+          h->tm[n].pend = 16; //without catching up forever
         h->tm[n].overflows = d;
       }
-      // one by one: the next when the game has served the previous
+      //one by one: the next when the game has served the previous
       if (h->tm[n].pend && !(h->if_ & (8u << n)))
       {
         irq(id, 8u << n);
@@ -222,12 +222,12 @@ static void update(void)
     }
   }
   if (frame != frame_seen)
-  { // new VBlank: draw the screens
+  { //new VBlank: draw the screens
     frame_seen = frame;
     log_note_game_frame();
     static uint32_t up[256 * 192], bottom[256 * 192];
-    gx_vblank(hw[0].io); // if the game asked for SWAP_BUFFERS, its 3D scene is painted
-    { // FPS counter (screen and 3D scenes finished by the game), every second
+    gx_vblank(hw[0].io); //if the game asked for SWAP_BUFFERS, its 3D scene is painted
+    { //FPS counter (screen and 3D scenes finished by the game), every second
       static uint64_t t_fps, frames_fps, scenes_before;
       frames_fps++;
       if (t >= t_fps + (uint64_t)CLOCK)
@@ -240,15 +240,15 @@ static void update(void)
         t_fps = t;
       }
     }
-    // The image is built on another thread from a snapshot of the VRAM (video_draw_separate):
-    // building it here took up to 6 ms with the 3D at 4x and the ARM7 skipped sound steps (slow
-    // music). With screen capture on it is built right here: the game reads what was captured in
-    // the next frame.
+    //the image is built on another thread from a snapshot of the VRAM (video_draw_separate):
+    //building it here took up to 6 ms with the 3D at 4x and the ARM7 skipped sound steps (slow
+    //music). With screen capture on it is built right here: the game reads what was captured in
+    //the next frame.
     if (hw[0].io[0x67] & 0x80)
     {
       video_wait_assembly();
       video_draw(hw[0].io, up, bottom);
-      hw[0].io[0x67] &= 0x7F; // the capture (DISPCAPCNT) lasts one frame and turns itself off
+      hw[0].io[0x67] &= 0x7F; //the capture (DISPCAPCNT) lasts one frame and turns itself off
       window_show(up, bottom);
     }
     else
@@ -256,8 +256,8 @@ static void update(void)
       video_draw_separate(hw[0].io);
     }
     extern void name_per_frame(void);
-    // the launcher name in the save (main.c)
-    // launcher name written into the save, main.c
+    //the launcher name in the save (main.c)
+    //launcher name written into the save, main.c
     name_per_frame();
     save_per_frame();
     window_messages();
@@ -270,8 +270,8 @@ static void update(void)
   }
 }
 
-// What OS_IrqHandler_ThreadSwitch of the SDK does before switching thread:
-// wake the threads that were waiting for an interrupt.
+//what OS_IrqHandler_ThreadSwitch of the SDK does before switching thread:
+//wake the threads that were waiting for an interrupt.
 static void wake_threads(Cpu* c)
 {
   SoConfig* s = &g_so[c->id];
@@ -299,21 +299,21 @@ static int irq_list(int id)
   return (hw[id].ime & 1) && (hw[id].ie & hw[id].if_);
 }
 
-// Calls the interrupt handler of the game as the BIOS would.
+//calls the interrupt handler of the game as the BIOS would.
 //`forzar` (force): the BIOS (IntrWait) accepts them even if the CPSR has them disabled.
 static void deliver(Cpu* c, int forzar)
 {
   if (!(hw[c->id].ie & hw[c->id].if_))
     return;
   if (g_no_irq[c->id])
-    return; // saving or loading a thread context (threads.c): later
+    return; //saving or loading a thread context (threads.c): later
   if (!forzar && (!(hw[c->id].ime & 1) || (c->ctl & 0x80)))
     return;
   Cpu before = *c;
   uint32_t cpsr = cpu_get_cpsr(c);
-  cpu_set_cpsr(c, (cpsr & ~0x3Fu) | 0x92); // mode IRQ, interrupciones apagadas, ARM
+  cpu_set_cpsr(c, (cpsr & ~0x3Fu) | 0x92); //mode IRQ, interrupciones apagadas, ARM
   c->spsr = cpsr;
-  c->r[13] -= 24; // the BIOS saves r0-r3, r12, lr on the IRQ stack
+  c->r[13] -= 24; //the BIOS saves r0-r3, r12, lr on the IRQ stack
   c->r[14] = 0xFFFF0000;
   uint32_t vector = c->id ? rd32_7(0x0380FFFC) : rd32_9(g_dtcm_base + 0x3FFC);
   cpu_call(c, vector);
@@ -321,10 +321,10 @@ static void deliver(Cpu* c, int forzar)
   uint32_t func = c->func;
   *c = before;
   c->func = func;
-  // pending thread switch: done already outside the interrupt, but only on returning to the thread.
-  // If this interrupt arrived inside another (the Multiplayer wifi reopens them in its notices),
-  // the thread would be switched in the middle of the outer one and its IRQ stack would be
-  // overwritten. The outer one will do it on finishing
+  //pending thread switch: done already outside the interrupt, but only on returning to the thread.
+  //If this interrupt arrived inside another (the Multiplayer wifi reopens them in its notices),
+  //the thread would be switched in the middle of the outer one and its IRQ stack would be
+  //overwritten. The outer one will do it on finishing
   SoConfig* s = &g_so[c->id];
   int nested = (cpu_get_cpsr(c) & 0x1F) == 0x12;
   if (!nested && s->flag_resched && brd16(c, s->flag_resched))
@@ -383,7 +383,7 @@ static void wait_event(Cpu* c)
       change(c);
       continue;
     }
-    // both stopped: sleep a little (1 ms) until the next event
+    //both stopped: sleep a little (1 ms) until the next event
     Sleep(1);
   }
   h->stopped = 0;
@@ -392,7 +392,7 @@ static void wait_event(Cpu* c)
 void ds_wait(Cpu* c, int swi)
 {
   if (swi == 4 || swi == 5)
-  { // IntrWait / VBlankIntrWait
+  { //IntrWait / VBlankIntrWait
     uint32_t chk = c->id ? 0x0380FFF8 : g_dtcm_base + 0x3FF8;
     uint32_t mask = swi == 5 ? 1 : c->r[1];
     int discard = swi == 5 ? 1 : (int)c->r[0];
@@ -411,14 +411,14 @@ void ds_wait(Cpu* c, int swi)
       deliver(c, 1);
     }
   }
-  wait_event(c); // Halt
+  wait_event(c); //Halt
   deliver(c, 0);
 }
 
-// While the game records, the samples of the PC microphone are written in its buffer at the pace it
-// asked for and the address of the last one is left at 0x027FFF90 (the game looks for it there).
-// When the buffer fills, the ARM9 is told (command 0x51) and, if it is a loop, it goes back to the
-// start.
+//while the game records, the samples of the PC microphone are written in its buffer at the pace it
+//asked for and the address of the last one is left at 0x027FFF90 (the game looks for it there).
+//When the buffer fills, the ARM9 is told (command 0x51) and, if it is a loop, it goes back to the
+//start.
 void mic_pc_open(void);
 void mic_pc_close(void);
 int16_t mic_pc_show(void);
@@ -430,7 +430,7 @@ static struct
 } mic;
 
 static void mic_a_arm9(uint32_t v)
-{ // a message from the "ARM7" to the ARM9 through the FIFO
+{ //a message from the "ARM7" to the ARM9 through the FIFO
   Hw* h = &hw[0];
   if (h->n >= 16)
     return;
@@ -468,9 +468,9 @@ static void mic_update(uint64_t t)
   uint64_t due = (t - mic.start) / mic.rate;
   uint64_t n = due - mic.done;
   if (n > mic.nbytes)
-    n = mic.nbytes; // after a pause, no more than one buffer
+    n = mic.nbytes; //after a pause, no more than one buffer
   mic.done = due;
-  int two = mic.type & 1, with_sign = (mic.type & 2) != 0; // 12 bits (in 16) or 8. Signed or not
+  int two = mic.type & 1, with_sign = (mic.type & 2) != 0; //12 bits (in 16) or 8. Signed or not
   for (uint64_t k = 0; k < n && mic.active; k++)
   {
     int16_t s = mic_pc_show();
@@ -484,7 +484,7 @@ static void mic_update(uint64_t t)
     {
       int b = s >> 8;
       if (b < -127)
-        b = -127; // the DS microphone does not give -128: the game demands a peak of exactly 127
+        b = -127; //the DS microphone does not give -128: the game demands a peak of exactly 127
       g_main[a] = with_sign ? (uint8_t)b : (uint8_t)(b + 128);
     }
     uint32_t last = mic.buf + mic.pos;
@@ -492,7 +492,7 @@ static void mic_update(uint64_t t)
     mic.pos += two ? 2 : 1;
     if (mic.pos >= mic.nbytes)
     {
-      mic_a_arm9((0x3000000u | (0xD1u << 8)) << 6 | 9); // buffer full
+      mic_a_arm9((0x3000000u | (0xD1u << 8)) << 6 | 9); //buffer full
       if (mic.loop)
         mic.pos = 0;
       else
@@ -506,7 +506,7 @@ static void mic_update(uint64_t t)
 static uint32_t ipc_rd(int id, uint32_t a)
 {
   Hw *h = &hw[id], *o = &hw[!id];
-  // whoever looks at the IPC is usually waiting for the other processor: hand over the turn now
+  //whoever looks at the IPC is usually waiting for the other processor: hand over the turn now
   if (cpu_of(id)->cycles > 200)
     cpu_of(id)->cycles = 200;
   switch (a)
@@ -522,7 +522,7 @@ static uint32_t ipc_rd(int id, uint32_t a)
       h->last = h->queue[0];
       memmove(h->queue, h->queue + 1, --h->n * 4);
       if (h->n == 0 && (o->fifocnt & 4))
-        irq(!id, 1u << 17); // to the other: send empty
+        irq(!id, 1u << 17); //to the other: send empty
     }
     return h->last;
   }
@@ -533,7 +533,7 @@ static void ipc_wr(int id, uint32_t a, uint32_t v)
 {
   Hw *h = &hw[id], *o = &hw[!id];
   if (cpu_of(id)->cycles > 200)
-    cpu_of(id)->cycles = 200; // the other one has to react: hand over the turn soon
+    cpu_of(id)->cycles = 200; //the other one has to react: hand over the turn soon
   switch (a)
   {
   case 0x04000180:
@@ -543,7 +543,7 @@ static void ipc_wr(int id, uint32_t a, uint32_t v)
     break;
   case 0x04000184:
     if (v & 8)
-      o->n = 0; // empty what was sent
+      o->n = 0; //empty what was sent
     if ((v & 4) && !(h->fifocnt & 4) && o->n == 0)
       irq(id, 1u << 17);
     if ((v & 0x400) && !(h->fifocnt & 0x400) && h->n)
@@ -554,15 +554,15 @@ static void ipc_wr(int id, uint32_t a, uint32_t v)
     if (!(h->fifocnt & 0x8000) || o->n == 16)
       break;
     if (id == 0 && (v & 31) == 9)
-    { // service 9: microphone
-      // The microphone commands are answered by the port ("done") without passing them to the ARM7:
-      // the ARM7 answered "busy" on stopping and the Balloon Battle hung. Without a PC microphone
-      // yet, blowing does nothing. Packet: bit 25 = first word (command in bits 8-15), bit 24 =
-      // last. Reply = (3 << 24)
+    { //service 9: microphone
+      //the microphone commands are answered by the port ("done") without passing them to the ARM7:
+      //the ARM7 answered "busy" on stopping and the Balloon Battle hung. Without a PC microphone
+      //yet, blowing does nothing. Packet: bit 25 = first word (command in bits 8-15), bit 24 =
+      //last. Reply = (3 << 24)
       //|((command | 0x80) << 8) | result (0 = fine). Record (command 0x41): first word = sample
-      // type | loop (0x10). Then words (index << 16) | 16 bits: 1-2 buffer, 3-4 size, 5-6 rhythm
-      // (cycles per sample). Stop: 0x42. The recording is done by mic_update with the PC microphone
-      // (microphone.c).
+      //type | loop (0x10). Then words (index << 16) | 16 bits: 1-2 buffer, 3-4 size, 5-6 rhythm
+      //(cycles per sample). Stop: 0x42. The recording is done by mic_update with the PC microphone
+      //(microphone.c).
       static uint32_t command_mic, param_mic[8];
       uint32_t d = v >> 6;
       if (d & 0x2000000)
@@ -666,7 +666,7 @@ static void root(Hw* h)
   memcpy(h->io + 0x2B0, &cnt, 2);
 }
 
-// ---- card (slot 1) ----------------------------------------------------------
+//---- card (slot 1) ----------------------------------------------------------
 static const uint8_t* rom;
 static size_t rom_size;
 static struct
@@ -702,8 +702,8 @@ static void card_start(int id, uint32_t v)
       irq(id, 1u << 19);
     return;
   }
-  card.ctrl |= 0x00800000; // there is data
-  dma_moment(id, id ? 2 : 5); // DMA waiting for the card
+  card.ctrl |= 0x00800000; //there is data
+  dma_moment(id, id ? 2 : 5); //DMA waiting for the card
 }
 
 static uint32_t card_data(int id)
@@ -719,7 +719,7 @@ static uint32_t card_data(int id)
   }
   else if (card.mode == 0xB8)
   {
-    v = 0x00001FC2; // chip ID (32 MB)
+    v = 0x00001FC2; //chip ID (32 MB)
   }
   card.pos += 4;
   if (card.pos >= card.total)
@@ -731,11 +731,11 @@ static uint32_t card_data(int id)
   return v;
 }
 
-// EEPROM or serial flash. It is saved in saves/save.sav.
-// serial flash. kept in saves/save.sav
+//EEPROM or serial flash. It is saved in saves/save.sav.
+//serial flash. kept in saves/save.sav
 static uint8_t save[0x80000];
-static uint32_t save_size = 0x40000; // MKDS: 256 KB serial flash
-static int save_flash = 1; // 1 = flash (3 byte addresses)
+static uint32_t save_size = 0x40000; //MKDS: 256 KB serial flash
+static int save_flash = 1; //1 = flash (3 byte addresses)
 static struct
 {
   int pos;
@@ -744,18 +744,18 @@ static struct
   int written;
 } sav;
 
-// how the save file is kept
-// the game writes flash in many small commands. a command only marks the save dirty
-// the file is written once per half second at most, on request from the menu and on exit
-// each write goes to a temp file first so a crash never leaves a half written save
+//how the save file is kept
+//the game writes flash in many small commands. a command only marks the save dirty
+//the file is written once per half second at most, on request from the menu and on exit
+//each write goes to a temp file first so a crash never leaves a half written save
 #define SAVE_FOLDER "saves"
 #define SAVE_FILE SAVE_FOLDER "/save.sav"
 #define SAVE_TEMPORAL SAVE_FOLDER "/save.sav.tmp"
 #define SAVE_FILE_OLD                                                                              \
-  "save.sav" // where older versions kept it: read once if the new file is missing
-#define SAVE_WAIT_FRAMES 30 // frames between a dirty mark and the disk write
-static volatile int save_dirty; // 1 = memory is newer than the file
-static int save_wait; // frames since the save became dirty
+  "save.sav" //where older versions kept it: read once if the new file is missing
+#define SAVE_WAIT_FRAMES 30 //frames between a dirty mark and the disk write
+static volatile int save_dirty; //1 = memory is newer than the file
+static int save_wait; //frames since the save became dirty
 
 static void save_load(void)
 {
@@ -763,7 +763,7 @@ static void save_load(void)
   memset(save, 0xFF, sizeof save);
   FILE* f = fopen(SAVE_FILE, "rb");
   if (!f)
-    f = fopen(SAVE_TEMPORAL, "rb"); // crash between remove and rename left only the temp file
+    f = fopen(SAVE_TEMPORAL, "rb"); //crash between remove and rename left only the temp file
   if (!f)
     f = fopen(SAVE_FILE_OLD, "rb");
   if (f)
@@ -773,7 +773,7 @@ static void save_load(void)
   }
 }
 
-// write the whole save through the temp file. returns 1 when the new file is in place
+//write the whole save through the temp file. returns 1 when the new file is in place
 static int save_write(void)
 {
   CreateDirectoryA(SAVE_FOLDER, NULL);
@@ -786,11 +786,11 @@ static int save_write(void)
     remove(SAVE_TEMPORAL);
     return 0;
   }
-  remove(SAVE_FILE); // rename does not replace an existing file on Windows
+  remove(SAVE_FILE); //rename does not replace an existing file on Windows
   return rename(SAVE_TEMPORAL, SAVE_FILE) == 0;
 }
 
-// write now if there is anything to write. called on exit and by save_per_frame
+//write now if there is anything to write. called on exit and by save_per_frame
 void save_write_pending(void)
 {
   if (!save_dirty)
@@ -814,9 +814,9 @@ void save_write_pending(void)
   }
 }
 
-// menu button save now. the game thread does the write on the next frame
+//menu button save now. the game thread does the write on the next frame
 
-// once per frame from the main loop
+//once per frame from the main loop
 void save_per_frame(void)
 {
   if (!save_dirty)
@@ -846,13 +846,13 @@ static uint8_t sav_byte(uint8_t b)
       save_flash = 1;
     return 0xFF;
   }
-  int ad = save_flash ? 3 : 2; // address bytes
+  int ad = save_flash ? 3 : 2; //address bytes
   switch (sav.cmd)
   {
   case 0x05:
-    return (uint8_t)(sav.wel << 1); // status: free. Bit 1 = write allowed
+    return (uint8_t)(sav.wel << 1); //status: free. Bit 1 = write allowed
   case 0x03:
-  case 0x0B: // leer
+  case 0x0B: //leer
     if (pos <= ad)
     {
       sav.dir = (sav.dir << 8) | b;
@@ -862,7 +862,7 @@ static uint8_t sav_byte(uint8_t b)
       return 0xFF;
     return save[sav.dir++ % save_size];
   case 0x02:
-  case 0x0A: // write_out
+  case 0x0A: //write_out
     if (pos <= ad)
     {
       sav.dir = (sav.dir << 8) | b;
@@ -876,7 +876,7 @@ static uint8_t sav_byte(uint8_t b)
     sav.dir++;
     return 0xFF;
   case 0x9F:
-    return pos == 1 ? 0x20 : pos == 2 ? 0x40 : 0x12; // ID (flash)
+    return pos == 1 ? 0x20 : pos == 2 ? 0x40 : 0x12; //ID (flash)
   }
   return 0xFF;
 }
@@ -884,16 +884,16 @@ static uint8_t sav_byte(uint8_t b)
 static void sav_data(uint8_t v)
 {
   if (!(card.spicnt & 0x8000) || !(card.spicnt & 0x2000))
-    return; // bit 13 = 1: mode serie (stored)
+    return; //bit 13 = 1: mode serie (stored)
   sav.data = sav_byte(v);
   if (!(card.spicnt & 0x40))
-  { // end of the command (without holding the selection)
+  { //end of the command (without holding the selection)
     if (sav.written)
     {
       save_dirty = 1;
       sav.written = 0;
       sav.wel = 0;
-    } // written to disk later by save_per_frame
+    } //written to disk later by save_per_frame
     sav.pos = 0;
   }
 }
@@ -918,7 +918,7 @@ static uint8_t spi_byte(uint8_t b)
   int dev = (spi.cnt >> 8) & 3;
   int pos = spi.pos++;
   if (dev == 0)
-  { // power manager: index (bit 7 = read) and then data
+  { //power manager: index (bit 7 = read) and then data
     if (pos == 0)
     {
       spi.cmd = b;
@@ -930,15 +930,15 @@ static uint8_t spi_byte(uint8_t b)
     return 0;
   }
   if (dev == 1)
-  { // firmware flash memory (ST M45PE20)
+  { //firmware flash memory (ST M45PE20)
     if (pos == 0)
     {
       spi.cmd = b;
       spi.dir = 0;
       if (b == 0x06)
-        spi.wel = 1; // WREN: permite write_out
+        spi.wel = 1; //WREN: permite write_out
       if (b == 0x04)
-        spi.wel = 0; // WRDI
+        spi.wel = 0; //WRDI
       return 0;
     }
     switch (spi.cmd)
@@ -954,11 +954,11 @@ static uint8_t spi_byte(uint8_t b)
         return 0;
       return firmware[spi.dir++ & 0x3FFFF];
     case 0x05:
-      return spi.wel << 1; // status: free. Bit 1 = write allowed
+      return spi.wel << 1; //status: free. Bit 1 = write allowed
     case 0x9F:
       return pos == 1 ? 0x20 : pos == 2 ? 0x40 : 0x12;
     case 0x0A:
-    case 0x02: // write page
+    case 0x02: //write page
       if (pos <= 3)
       {
         spi.dir = (spi.dir << 8) | b;
@@ -972,7 +972,7 @@ static uint8_t spi_byte(uint8_t b)
       spi.dir = (spi.dir & ~0xFFu) | ((spi.dir + 1) & 0xFF);
       return 0;
     case 0xDB:
-    case 0xD8: // erase page / sector
+    case 0xD8: //erase page / sector
       if (pos <= 3)
       {
         spi.dir = (spi.dir << 8) | b;
@@ -987,7 +987,7 @@ static uint8_t spi_byte(uint8_t b)
     return 0xFF;
   }
   if (dev == 2)
-  { // touch screen (TSC2046): without touching, all 0
+  { //touch screen (TSC2046): without touching, all 0
     uint8_t r = tsc_n ? tsc_out[0] : 0;
     if (tsc_n)
     {
@@ -996,7 +996,7 @@ static uint8_t spi_byte(uint8_t b)
     }
     if (b & 0x80)
     {
-      // channel 5 = X, 1 = Y (the firmware calibration is pixel * 16), 3/4 = pressure
+      //channel 5 = X, 1 = Y (the firmware calibration is pixel * 16), 3/4 = pressure
       int channel = (b >> 4) & 7;
       uint16_t val = 0;
       if (g_stylus)
@@ -1019,7 +1019,7 @@ static uint8_t spi_byte(uint8_t b)
   return 0xFF;
 }
 
-// Standard CRC-16 (0xA001), the same result as the BIOS (SWI 0x0E)
+//Standard CRC-16 (0xA001), the same result as the BIOS (SWI 0x0E)
 static uint16_t crc16(uint16_t crc, const uint8_t* p, size_t n)
 {
   uint32_t c = crc;
@@ -1032,27 +1032,27 @@ static uint16_t crc16(uint16_t crc, const uint8_t* p, size_t n)
   return (uint16_t)c;
 }
 
-// An invented firmware with the console settings (name, language, touch)
+//an invented firmware with the console settings (name, language, touch)
 static void prepare_firmware(void)
 {
   memset(firmware, 0xFF, sizeof firmware);
   memset(firmware, 0, 0x200);
-  firmware[0x1D] = 0x20; // DS Lite
+  firmware[0x1D] = 0x20; //DS Lite
   firmware[0x20] = 0xC0;
-  firmware[0x21] = 0x7F; // settings at 0x3FE00 (0x7FC0 * 8)
+  firmware[0x21] = 0x7F; //settings at 0x3FE00 (0x7FC0 * 8)
   static const uint8_t mac[6] = {0x00, 0x09, 0xBF, 0x12,
-                                 0x34, 0x56}; // fixed: there is no network play in this version
+                                 0x34, 0x56}; //fixed: there is no network play in this version
   memcpy(firmware + 0x36, mac, 6);
   firmware[0x3C] = 0xFE;
-  firmware[0x3D] = 0x3F; // canales wifi 1-13
+  firmware[0x3D] = 0x3F; //canales wifi 1-13
   uint8_t u[0x100];
   memset(u, 0, sizeof u);
-  u[0x00] = 5; // version
-  u[0x02] = 11; // color favorito
+  u[0x00] = 5; //version
+  u[0x02] = 11; //color favorito
   u[0x03] = 1;
-  u[0x04] = 1; // birthday
-  // console name: the player's (NAME in settings.ini). The game copies it to a
-  // new save (the game shows it during the races)
+  u[0x04] = 1; //birthday
+  //console name: the player's (NAME in settings.ini). The game copies it to a
+  //new save (the game shows it during the races)
   wchar_t label[11] = L"Jugador";
   const char* nom = getenv("DRIFT_NAME");
   if (nom && *nom)
@@ -1065,7 +1065,7 @@ static void prepare_firmware(void)
   for (; span < 10 && label[span]; span++)
     memcpy(u + 0x06 + span * 2, &label[span], 2);
   u[0x1A] = (uint8_t)span;
-  // touch screen calibration: ADC = pixel * 16
+  //touch screen calibration: ADC = pixel * 16
   uint16_t cal[] = {32 * 16, 32 * 16};
   memcpy(u + 0x58, cal, 4);
   u[0x5C] = 32;
@@ -1074,13 +1074,13 @@ static void prepare_firmware(void)
   memcpy(u + 0x5E, cal2, 4);
   u[0x62] = 224;
   u[0x63] = 160;
-  // console language (the European game uses it): 1 English, 2 French, 3 German, 4 Italian, 5
-  // Spanish. DRIFT_LANGUAGE (LANGUAGE in settings.ini). Spanish by default
+  //console language (the European game uses it): 1 English, 2 French, 3 German, 4 Italian, 5
+  //Spanish. DRIFT_LANGUAGE (LANGUAGE in settings.ini). Spanish by default
   int language = getenv("DRIFT_LANGUAGE") ? atoi(getenv("DRIFT_LANGUAGE")) : 5;
   if (language < 1 || language > 5)
     language = 5;
-  u[0x64] = (uint8_t)(language | (3 << 4)); // and maximum brightness
-  u[0x70] = 1; // save counter
+  u[0x64] = (uint8_t)(language | (3 << 4)); //and maximum brightness
+  u[0x70] = 1; //save counter
   uint16_t crc = crc16(0xFFFF, u, 0x70);
   memcpy(u + 0x72, &crc, 2);
   memcpy(firmware + 0x3FE00, u, 0x100);
@@ -1088,14 +1088,14 @@ static void prepare_firmware(void)
   crc = crc16(0xFFFF, u, 0x70);
   memcpy(u + 0x72, &crc, 2);
   memcpy(firmware + 0x3FF00, u, 0x100);
-  // what the console boot leaves in RAM: settings and card data
+  //what the console boot leaves in RAM: settings and card data
   memcpy(g_main + 0x3FFC80, firmware + 0x3FE00, 0x70);
   uint32_t chip = 0x00001FC2;
   memcpy(g_main + 0x3FF800, &chip, 4);
   memcpy(g_main + 0x3FF804, &chip, 4);
   memcpy(g_main + 0x3FFC00, &chip, 4);
   memcpy(g_main + 0x3FFC04, &chip, 4);
-  uint16_t boot = 1; // booted from card
+  uint16_t boot = 1; //booted from card
   memcpy(g_main + 0x3FFC40, &boot, 2);
 }
 
@@ -1117,7 +1117,7 @@ static void rtc_byte(uint8_t b)
   if (rtc.pos_in == 0)
   {
     if ((b & 0xF0) != 0x60 && (b & 0x0F) == 0x06)
-    { // it arrived reversed
+    { //it arrived reversed
       uint8_t r = 0;
       for (int i = 0; i < 8; i++)
         r |= ((b >> i) & 1) << (7 - i);
@@ -1126,7 +1126,7 @@ static void rtc_byte(uint8_t b)
     rtc.cmd = b;
     memset(rtc.outbuf, 0, sizeof rtc.outbuf);
     if (b & 1)
-    { // lectura
+    { //lectura
       time_t t = time(NULL);
       struct tm* f = localtime(&t);
       switch ((b >> 1) & 7)
@@ -1155,7 +1155,7 @@ static void rtc_byte(uint8_t b)
     }
   }
   else if (!(rtc.cmd & 1))
-  { // write
+  { //write
     if (((rtc.cmd >> 1) & 7) == 0)
       rtc.state1 = (rtc.state1 & 0xF0) | (b & 0x0E);
     if (((rtc.cmd >> 1) & 7) == 1)
@@ -1164,18 +1164,18 @@ static void rtc_byte(uint8_t b)
   rtc.pos_in++;
 }
 
-// bit 0 data, bit 1 clock, bit 2 select, bit 4 direction of the data (1 = the CPU writes)
+//bit 0 data, bit 1 clock, bit 2 select, bit 4 direction of the data (1 = the CPU writes)
 static void rtc_wr(uint8_t v)
 {
   uint8_t before = rtc.io;
   uint8_t data = (v & 0x10) ? (v & 1) : (rtc.io & 1);
   if (!(v & 4) || !(before & 4))
-  { // not selected or just selected: start
+  { //not selected or just selected: start
     rtc.bit_in = rtc.pos_in = rtc.bit_out = rtc.pos_out = 0;
     rtc.in = 0;
   }
   else if (!(before & 2) && (v & 2))
-  { // rising edge of the clock
+  { //rising edge of the clock
     if (v & 0x10)
     {
       rtc.in |= (uint8_t)((v & 1) << rtc.bit_in);
@@ -1208,7 +1208,7 @@ static int register_common(int id, uint32_t a, uint32_t* v)
   switch (a & ~3u)
   {
   case 0x04000004:
-  { // DISPSTAT + VCOUNT
+  { //DISPSTAT + VCOUNT
     t = now_ms();
     int line = (int)((t / CYCLES_LINE) % LINES);
     int goal = (h->dispstat >> 8) | ((h->dispstat & 0x80) << 1);
@@ -1228,7 +1228,7 @@ static int register_common(int id, uint32_t a, uint32_t* v)
   }
   case 0x04000130:
     *v = g_keyinput | (reg32(h, 0x04000130) & 0xFFFF0000);
-    return 1; // keys
+    return 1; //keys
   case 0x04000180:
   case 0x04000184:
   case 0x04100000:
@@ -1260,7 +1260,7 @@ static int write_common(int id, uint32_t a, uint32_t v, int bytes)
 {
   Hw* h = &hw[id];
   uint32_t a4 = a & ~3u;
-  // 8/16 bit writes are combined with what was already there
+  //8/16 bit writes are combined with what was already there
   uint32_t old = 0, w;
   if (!register_common(id, a4, &old))
     old = reg32(h, a4);
@@ -1318,7 +1318,7 @@ static int write_common(int id, uint32_t a, uint32_t v, int bytes)
     return 1;
   case 0x04000214:
     h->if_ &= ~(v << shift);
-    return 1; // writing 1 = already served
+    return 1; //writing 1 = already served
   }
   return 0;
 }
@@ -1334,15 +1334,15 @@ static uint32_t read_io(int id, uint32_t a, int bytes)
   return v;
 }
 
-// ---- ARM9 --------------------------------------------------------------------
+//---- ARM9 --------------------------------------------------------------------
 uint32_t io9_rd(uint32_t a, int bytes)
 {
   Hw* h = &hw[0];
   if (a >= 0x04000600 && a < 0x040006A4)
-  { // state and results of the 3D engine
+  { //state and results of the 3D engine
     uint32_t v = gx_read(a & ~3u);
     if ((a & ~3u) == 0x04000600)
-      v |= reg32(h, 0x04000600) & 0xC0000000; // IRQ mode of the FIFO
+      v |= reg32(h, 0x04000600) & 0xC0000000; //IRQ mode of the FIFO
     return v >> ((a & 3) * 8);
   }
   uint32_t v = read_io(0, a, bytes);
@@ -1377,7 +1377,7 @@ void io9_wr(uint32_t a, uint32_t v, int bytes)
     return;
   }
   if (a >= 0x04000240 && a < 0x0400024A)
-  { // VRAMCNT A..I (byte a byte)
+  { //VRAMCNT A..I (byte a byte)
     for (int k = 0; k < bytes; k++)
     {
       uint32_t r = a + k - 0x04000240;
@@ -1392,7 +1392,7 @@ void io9_wr(uint32_t a, uint32_t v, int bytes)
   {
     gx_write(a & ~3u, v);
     return;
-  } // motor 3D
+  } //motor 3D
   if (a >= 0x04000600 && a < 0x04000700)
     return;
   if ((a >= 0x04000000 && a < 0x04000070) || (a >= 0x04001000 && a < 0x04001070) ||
@@ -1401,14 +1401,14 @@ void io9_wr(uint32_t a, uint32_t v, int bytes)
     return;
 }
 
-// ---- ARM7 --------------------------------------------------------------------
+//---- ARM7 --------------------------------------------------------------------
 uint32_t io7_rd(uint32_t a, int bytes)
 {
   Hw* h = &hw[1];
   switch (a & ~3u)
   {
-  case 0x04000134: // RCNT and KEYXY: X/Y not pressed, no stylus, lid open
-    // bit 6 = stylus (0 = touching), bit 7 = lid (0 = open)
+  case 0x04000134: //RCNT and KEYXY: X/Y not pressed, no stylus, lid open
+    //bit 6 = stylus (0 = touching), bit 7 = lid (0 = open)
     return ((uint32_t)((g_keyxy & 3) | 0x3C | (g_stylus ? 0 : 0x40)) << 16 |
             (reg32(h, 0x04000134) & 0xFFFF)) >>
            ((a & 3) * 8);
@@ -1418,9 +1418,9 @@ uint32_t io7_rd(uint32_t a, int bytes)
     return ((a & 2) ? spi.data : (uint32_t)(spi.cnt & ~0x80) | ((uint32_t)spi.data << 16)) &
            (bytes == 4 ? ~0u : 0xFFFF);
   case 0x04000204:
-    return reg32(&hw[0], 0x04000204) >> ((a & 3) * 8); // EXMEMSTAT
+    return reg32(&hw[0], 0x04000204) >> ((a & 3) * 8); //EXMEMSTAT
   case 0x04000240:
-    return ((uint32_t)g_wramcnt << 8 | 3) >> ((a & 3) * 8); // VRAMSTAT/WRAMSTAT
+    return ((uint32_t)g_wramcnt << 8 | 3) >> ((a & 3) * 8); //VRAMSTAT/WRAMSTAT
   }
   uint32_t v = read_io(1, a, bytes);
   if ((a >= 0x040000B0 && a < 0x04000110) || a == 0x04000300 || a == 0x04000304)
@@ -1434,7 +1434,7 @@ void io7_wr(uint32_t a, uint32_t v, int bytes)
   if (write_common(1, a, v, bytes))
     return;
   if (a >= 0x04000400 && a < 0x04000500)
-  { // sound channel: is it started?
+  { //sound channel: is it started?
     uint32_t o = a & 0xFFFF, base = o & ~15u, before = reg32(h, base);
     memcpy(h->io + o, &v, bytes);
     if (!(before & 0x80000000) && (reg32(h, base) & 0x80000000))
@@ -1461,7 +1461,7 @@ void io7_wr(uint32_t a, uint32_t v, int bytes)
     {
       spi.data = spi_byte((uint8_t)v);
       if (!(spi.cnt & 0x800))
-      { // end of the command
+      { //end of the command
         if (((spi.cnt >> 8) & 3) == 1 && spi.pos > 1 &&
             (spi.cmd == 0x0A || spi.cmd == 0x02 || spi.cmd == 0xDB || spi.cmd == 0xD8))
         {
@@ -1473,7 +1473,7 @@ void io7_wr(uint32_t a, uint32_t v, int bytes)
         irq(1, 1u << 23);
     }
     return;
-  case 0x04000301: // HALTCNT
+  case 0x04000301: //HALTCNT
     if ((v & 0xC0) == 0x80 || (v & 0xC0) == 0xC0)
       ds_wait(&g_cpu7, 6);
     return;
@@ -1485,7 +1485,7 @@ void io7_wr(uint32_t a, uint32_t v, int bytes)
     return;
 }
 
-// ---- boot ------------------------------------------------------------------
+//---- boot ------------------------------------------------------------------
 static uint32_t entry7;
 
 static void WINAPI fiber_arm7(void* p)
@@ -1501,10 +1501,10 @@ void ds_start(uint32_t entry9, uint32_t e7)
 {
   QueryPerformanceFrequency(&freq);
   QueryPerformanceCounter(&t0);
-  timeBeginPeriod(1); // a real 1 ms Sleep(1)
+  timeBeginPeriod(1); //a real 1 ms Sleep(1)
   prepare_firmware();
   save_load();
-  gx_init(); // before the window: a PC without OpenGL 4.5 gets its message with no empty window
+  gx_init(); //before the window: a PC without OpenGL 4.5 gets its message with no empty window
   window_init();
   sound_init();
   entry7 = e7;

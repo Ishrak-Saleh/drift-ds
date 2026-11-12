@@ -1,4 +1,4 @@
-// OpenGL 4.5 context on a hidden window. See glctx.h.
+//OpenGL 4.5 context on a hidden window. See glctx.h.
 #include "glctx.h"
 #include "glload.h"
 #include <stdio.h>
@@ -66,7 +66,7 @@ GlCtx* glctx_create(char* err, size_t err_size)
     }
     registered = 1;
   }
-  // a window that is never shown: only its device context is needed
+  //a window that is never shown: only its device context is needed
   c->hwnd = CreateWindowExA(0, cls, "", WS_POPUP, 0, 0, 16, 16, NULL, NULL, inst, NULL);
   c->dc = c->hwnd ? GetDC(c->hwnd) : NULL;
   if (!c->dc)
@@ -89,7 +89,7 @@ GlCtx* glctx_create(char* err, size_t err_size)
     release(c);
     return NULL;
   }
-  // an old style context first: only a current context can tell where the new function is
+  //an old style context first: only a current context can tell where the new function is
   HGLRC temp = wglCreateContext(c->dc);
   if (!temp || !wglMakeCurrent(c->dc, temp))
   {
@@ -159,7 +159,7 @@ void glctx_version(const GlCtx* c, int* major, int* minor)
   *minor = c->minor;
 }
 
-// ---- self test ----
+//---- self test ----
 
 static GLuint compile(GLenum type, const char* src, char* err, size_t err_size)
 {
@@ -179,9 +179,9 @@ static GLuint compile(GLenum type, const char* src, char* err, size_t err_size)
   return s;
 }
 
-// A full screen triangle without any vertex data. The fragment shader writes four numbers that
-// depend on the pixel, and reads a second texture with texelFetch, so both an integer target and
-// an integer source are tried.
+//a full screen triangle without any vertex data. The fragment shader writes four numbers that
+//depend on the pixel, and reads a second texture with texelFetch, so both an integer target and
+//an integer source are tried.
 static const char* VS = "#version 450 core\n"
                         "void main(){\n"
                         "  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n"
@@ -222,14 +222,14 @@ int glctx_selftest(char* err, size_t err_size)
     goto done;
   }
   glGenTextures(2, tex);
-  // source: two texels, red = 11 and 22
+  //source: two texels, red = 11 and 22
   glBindTexture(GL_TEXTURE_2D, tex[0]);
   glTexStorage2D(GL_TEXTURE_2D, 1, GLX_RGBA8UI, 2, 1);
   const uint8_t srcpx[8] = {11, 0, 0, 0, 22, 0, 0, 0};
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 2, 1, GLX_RGBA_INTEGER, GL_UNSIGNED_BYTE, srcpx);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  // target
+  //target
   glBindTexture(GL_TEXTURE_2D, tex[1]);
   glTexStorage2D(GL_TEXTURE_2D, 1, GLX_RGBA8UI, W, H);
   glGenFramebuffers(1, &fbo);

@@ -1,14 +1,14 @@
-// raster_ref.h: the CPU rasterizer of gpu3d.c as it was when the GPU work started, kept as a test
-// oracle (the same idea as texel_ref.h).
+//raster_ref.h: the CPU rasterizer of gpu3d.c as it was when the GPU work started, kept as a test
+//oracle (the same idea as texel_ref.h).
 //
-// Where it fits: tests/test_gpufuzz.c draws random scenes with this code and with gpuraster.c and
-// compares the pictures. The body below is a verbatim copy of VP .. paint_band in runtime/gpu3d.c
-// (commit 73a07ea and the graphics branch before the GPU drawing went live), with three changes:
-// the texture cache is left out (every texel goes through texel()), the band threads are replaced
-// by one call that paints the whole picture, and the globals it needs are defined here.
-// Why: the recorded scenes only use some features (no Z buffer, no decal, no toon, no equal-depth
-// polygons). Random scenes reach all of them, and need an oracle that can run any scene.
-// Do not edit the copied body: when the real rasterizer changes on purpose, copy it again.
+//where it fits: tests/test_gpufuzz.c draws random scenes with this code and with gpuraster.c and
+//compares the pictures. The body below is a verbatim copy of VP .. paint_band in runtime/gpu3d.c
+//(commit 73a07ea and the graphics branch before the GPU drawing went live), with three changes:
+//the texture cache is left out (every texel goes through texel()), the band threads are replaced
+//by one call that paints the whole picture, and the globals it needs are defined here.
+//why: the recorded scenes only use some features (no Z buffer, no decal, no toon, no equal-depth
+//polygons). Random scenes reach all of them, and need an oracle that can run any scene.
+//Do not edit the copied body: when the real rasterizer changes on purpose, copy it again.
 #pragma once
 #include "gpu3d_types.h"
 #include "gpuraster.h"
@@ -31,23 +31,23 @@ static inline uint16_t texel(uint32_t ti, uint32_t pltt, int s, int t, int* alph
   return texmem_texel(&snap, ti, pltt, s, t, alpha);
 }
 
-// ---- copied from runtime/gpu3d.c ----
+//---- copied from runtime/gpu3d.c ----
 typedef struct
 {
   float x, y, z, iw, r, g, b, s, t;
-} VP; // vertex on screen (attributes / w)
+} VP; //vertex on screen (attributes / w)
 
 typedef struct
-{ // polygon ready to paint
+{ //polygon ready to paint
   VP v[MAX_VERT_POLY];
   int n;
   uint32_t teximage, pltt;
   uint8_t mode, alpha, id, textures, depth_same, act_depth_trans, translucent;
-  TexC* tc; // texture cache slot, NULL = decode with texel() per pixel
+  TexC* tc; //texture cache slot, NULL = decode with texel() per pixel
 } PP;
 
 typedef struct
-{ // what the painting thread needs (copied at the start of the scene)
+{ //what the painting thread needs (copied at the start of the scene)
   uint8_t io[0x400];
   int wbuf, vp_x1, vp_y1, vp_x2, vp_y2, lst;
 } Job;
@@ -56,28 +56,28 @@ static PP pp[MAX_POLYS];
 static int npp;
 static Job job;
 
-// Rescale: the 3D is painted at esc times the DS resolution (DRIFT_SCALE, 1-4). output_* is at DS
-// size (for the 2D, the capture and the replays). output_hd_* is at big size (for the window).
+//Rescale: the 3D is painted at esc times the DS resolution (DRIFT_SCALE, 1-4). output_* is at DS
+//size (for the 2D, the capture and the replays). output_hd_* is at big size (for the window).
 #define MAXP (1024 * 768)
 static int esc = 1, AN = 256, AT = 192;
-static uint16_t color_buf[MAXP]; // RGB555
-static uint8_t alpha_buf[MAXP]; // 0..31 (0 = nada)
+static uint16_t color_buf[MAXP]; //RGB555
+static uint8_t alpha_buf[MAXP]; //0..31 (0 = nada)
 static uint32_t depth_buf[MAXP];
 static uint8_t id_buf[MAXP];
-// What was painted: a ring of 3 sets. The painting thread writes the one after the current. The
-// image build (another thread) uses the one it gets for a frame, without it being overwritten.
+//what was painted: a ring of 3 sets. The painting thread writes the one after the current. The
+//image build (another thread) uses the one it gets for a frame, without it being overwritten.
 typedef struct
 {
-  uint16_t color[256 * 192]; // at DS size
+  uint16_t color[256 * 192]; //at DS size
   uint8_t alpha[256 * 192];
-  uint16_t hd_color[MAXP]; // at big size (rescale)
+  uint16_t hd_color[MAXP]; //at big size (rescale)
   uint8_t hd_alpha[MAXP];
 } Output;
 static Output outputs[3];
 static volatile int output_current, polys_last;
 static volatile uint64_t cont_frames, cont_skipped;
 
-// Turns the polygons of the list into screen coordinates and drops those not seen
+//turns the polygons of the list into screen coordinates and drops those not seen
 
 static void prepare(const Job* tj, const Poly* lst, int n)
 {
@@ -88,10 +88,10 @@ static void prepare(const Job* tj, const Poly* lst, int n)
   {
     const Poly* p = &lst[k];
     if (p->n < 3)
-      continue; // outside the view
+      continue; //outside the view
     int alpha = (p->attr >> 16) & 31, mode = (p->attr >> 4) & 3;
     if (alpha == 0 || mode == 3)
-      continue; // wireframe and shadows: not painted for now
+      continue; //wireframe and shadows: not painted for now
     PP* q = &pp[npp];
     float area = 0;
     for (int i = 0; i < p->n; i++)
@@ -101,9 +101,9 @@ static void prepare(const Job* tj, const Poly* lst, int n)
       VP* v = &q->v[i];
       v->x = ((a->x * iw + 1) * vw / 2 + (float)tj->vp_x1) * (float)esc;
       v->y = ((1 - a->y * iw) * vh / 2 + (float)(191 - tj->vp_y2)) * (float)esc;
-      // DRIFT_SNAP=1: round screen positions to whole pixels of the drawing grid, as the DS does
-      // (its rasterizer has no sub-pixel positions), so textures do not slide by tiny amounts while
-      // a model moves
+      //DRIFT_SNAP=1: round screen positions to whole pixels of the drawing grid, as the DS does
+      //(its rasterizer has no sub-pixel positions), so textures do not slide by tiny amounts while
+      //a model moves
       v->z = tj->wbuf ? w : (a->z * iw + 1) / 2;
       v->iw = iw;
       v->r = a->r * iw;
@@ -130,7 +130,7 @@ static void prepare(const Job* tj, const Poly* lst, int n)
     q->alpha = (uint8_t)alpha;
     q->id = (uint8_t)((p->attr >> 24) & 63);
     q->textures = (disp3d & 1) && fmt != 0;
-    q->tc = NULL; // the oracle decodes every texel with texel()
+    q->tc = NULL; //the oracle decodes every texel with texel()
     q->depth_same = (p->attr >> 14) & 1;
     q->act_depth_trans = (p->attr >> 11) & 1;
     q->translucent = (uint8_t)p->translucent;
@@ -138,18 +138,18 @@ static void prepare(const Job* tj, const Poly* lst, int n)
   }
 }
 
-// triangle setup, computed once per image (not once per band): bands only clip the row range and
-// draw
+//triangle setup, computed once per image (not once per band): bands only clip the row range and
+//draw
 typedef struct
 {
   const PP* p;
   float id, k0, k0x, k0y, k1, k1x, k1y, l0x, l1x;
   float zA, zB, zC, iwA, iwB, iwC, rA, rB, rC, gA, gB, gC, bA, bB, bC, sA, sB, sC, tA, tB, tC;
-  int y0, y1, xa, xb; // bounding box on screen, x already clipped to the image
+  int y0, y1, xa, xb; //bounding box on screen, x already clipped to the image
 } Tri;
 #define MAX_TRIS (MAX_POLYS * 8)
 static Tri tris[MAX_TRIS];
-static int ntris, ntris_op; // tris[0..ntris_op) are opaque, the rest translucent
+static int ntris, ntris_op; //tris[0..ntris_op) are opaque, the rest translucent
 
 static void tri_prepare(const PP* p, const VP* A, const VP* B, const VP* C)
 {
@@ -169,14 +169,14 @@ static void tri_prepare(const PP* p, const VP* A, const VP* B, const VP* C)
   if (xb > AN - 1)
     xb = AN - 1;
   if (y1 < 0 || y0 > AT - 1 || xa > xb)
-    return; // nothing of it lands in the image
+    return; //nothing of it lands in the image
   T->p = p;
   T->id = id;
   T->y0 = y0;
   T->y1 = y1;
   T->xa = xa;
   T->xb = xb;
-  // barycentric weights of A and B as linear functions: l = (k + kx*px + ky*py) / d
+  //barycentric weights of A and B as linear functions: l = (k + kx*px + ky*py) / d
   T->k0 = B->x * C->y - C->x * B->y;
   T->k0x = B->y - C->y;
   T->k0y = C->x - B->x;
@@ -185,7 +185,7 @@ static void tri_prepare(const PP* p, const VP* A, const VP* B, const VP* C)
   T->k1y = A->x - C->x;
   T->l0x = T->k0x * id;
   T->l1x = T->k1x * id;
-  // atributo = aC + l0*(aA - aC) + l1*(aB - aC)
+  //atributo = aC + l0*(aA - aC) + l1*(aB - aC)
 #define DIF(c)                                                                                     \
   T->c##A = A->c - C->c;                                                                           \
   T->c##B = B->c - C->c;                                                                           \
@@ -201,8 +201,8 @@ static void tri_prepare(const PP* p, const VP* A, const VP* B, const VP* C)
   ntris++;
 }
 
-// triangles of the image, called after prepare(): opaque polygons first, then translucent ones,
-// each in list order
+//triangles of the image, called after prepare(): opaque polygons first, then translucent ones,
+//each in list order
 static void build_tris(void)
 {
   ntris = 0;
@@ -247,7 +247,7 @@ static void triangle(const Tri* T, int yb0, int yb1, const Job* tj, int layer_tr
   const uint32_t ep = epoch;
   int tw = 0, th = 0, rep_s = 0, flip_s = 0, rep_t = 0, flip_t = 0;
   if (tc)
-  { // wrap flags of the texture, once per triangle
+  { //wrap flags of the texture, once per triangle
     uint32_t ti = p->teximage;
     tw = tc->w;
     th = tc->h;
@@ -262,7 +262,7 @@ static void triangle(const Tri* T, int yb0, int yb1, const Job* tj, int layer_tr
     float py = (float)y + 0.5f;
     float px0 = (float)xa + 0.5f;
     float l0 = (k0 + k0x * px0 + k0y * py) * id, l1 = (k1 + k1x * px0 + k1y * py) * id;
-    // stretch of the row inside the triangle: l0, l1 and l2 = 1 - l0 - l1 >= 0
+    //stretch of the row inside the triangle: l0, l1 and l2 = 1 - l0 - l1 >= 0
     float lo = 0, hi = (float)(xb - xa);
     float base[3] = {l0, l1, 1 - l0 - l1}, step[3] = {l0x, l1x, -l0x - l1x};
     int outside = 0;
@@ -295,15 +295,15 @@ static void triangle(const Tri* T, int yb0, int yb1, const Job* tj, int layer_tr
     for (int x = xi; x <= xf; x++, l0 += l0x, l1 += l1x)
     {
       int i = y * AN + x;
-      // With a vertex stuck to the camera (huge 1/w) and the others far, at the edge (eps) this can
-      // give ~0 or negative: w and the colors blow up. That is already outside the triangle: not
-      // painted (the game closed when going through King Boo in his mission: with the camera
-      // inside, the index of the toon table came out negative and was read outside memory)
+      //with a vertex stuck to the camera (huge 1/w) and the others far, at the edge (eps) this can
+      //give ~0 or negative: w and the colors blow up. That is already outside the triangle: not
+      //painted (the game closed when going through King Boo in his mission: with the camera
+      //inside, the index of the toon table came out negative and was read outside memory)
       float iwp = iwC + l0 * iwA + l1 * iwB;
       if (!(iwp > 0))
         continue;
-      // w-buffer: w is not linear on screen (1/w is), so the already corrected w is used
-      // z-buffer mode: depth does not need w, so the division waits until the depth test has passed
+      //w-buffer: w is not linear on screen (1/w is), so the already corrected w is used
+      //z-buffer mode: depth does not need w, so the division waits until the depth test has passed
       float w;
       uint32_t zi;
       if (wbuf)
@@ -325,12 +325,12 @@ static void triangle(const Tri* T, int yb0, int yb1, const Job* tj, int layer_tr
       int vb = (int)((bC + l0 * bA + l1 * bB) * w * 2 + 0.5f);
       vr = vr < 0    ? 0
            : vr > 63 ? 63
-                     : vr; // like the console: 0..63 (and the toon table only has 32)
+                     : vr; //like the console: 0..63 (and the toon table only has 32)
       vg = vg < 0 ? 0 : vg > 63 ? 63 : vg;
       vb = vb < 0 ? 0 : vb > 63 ? 63 : vb;
       int cr = vr, cg = vg, cb = vb, ca = va;
       if (mode == 2)
-      { // toon / highlight: table according to red
+      { //toon / highlight: table according to red
         uint32_t o = 0x380 + (uint32_t)(vr >> 1) * 2;
         uint16_t tc = (uint16_t)(io[o] | io[o + 1] << 8);
         if ((disp3d >> 1) & 1)
@@ -363,7 +363,7 @@ static void triangle(const Tri* T, int yb0, int yb1, const Job* tj, int layer_tr
         if (tc)
         {
           int si = (int)floorf(s), ti_ = (int)floorf(t);
-          // same wrap as texel(), then one cache read
+          //same wrap as texel(), then one cache read
           if (rep_s)
           {
             if (flip_s)
@@ -409,13 +409,13 @@ static void triangle(const Tri* T, int yb0, int yb1, const Job* tj, int layer_tr
         int tb = ((tcol >> 10) & 31) * 2 + (((tcol >> 10) & 31) ? 1 : 0);
         int ta6 = ta * 2 + (ta ? 1 : 0);
         if (mode == 1)
-        { // decal
+        { //decal
           cr = (tr * ta6 + vr * (63 - ta6)) / 64;
           cg = (tg * ta6 + vg * (63 - ta6)) / 64;
           cb = (tb * ta6 + vb * (63 - ta6)) / 64;
         }
         else
-        { // modulate (and toon with texture)
+        { //modulate (and toon with texture)
           cr = ((tr + 1) * (vr + 1) - 1) / 64;
           cg = ((tg + 1) * (vg + 1) - 1) / 64;
           cb = ((tb + 1) * (vb + 1) - 1) / 64;
@@ -473,21 +473,21 @@ static void paint_band(int yb0, int yb1)
     id_buf[i] = cid;
   }
   for (int pass_num = 0; pass_num < 2; pass_num++)
-  { // first the opaque, then the translucent
+  { //first the opaque, then the translucent
     int k0 = pass_num ? ntris_op : 0, k1 = pass_num ? ntris : ntris_op;
     for (int k = k0; k < k1; k++)
     {
       const Tri* T = &tris[k];
       if (T->y1 < yb0 || T->y0 > yb1)
-        continue; // outside this band
+        continue; //outside this band
       triangle(T, yb0, yb1, tj, pass_num);
     }
   }
 }
 
-// ---- end of the copy ----
+//---- end of the copy ----
 
-// Draws a scene with the copied code. color gets w*h RGB555 words, alpha w*h bytes.
+//draws a scene with the copied code. color gets w*h RGB555 words, alpha w*h bytes.
 static void ref_draw(const GpuScene* s, int scale, uint16_t* color, uint8_t* alpha)
 {
   esc = scale;

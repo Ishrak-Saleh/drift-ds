@@ -1,9 +1,9 @@
-// Game log: see log.h.
+//Game log: see log.h.
 //
-// Layout: every line goes into a ring buffer under a short lock. A writer thread copies new lines
-// to the console and to the log file, so the thread that logs never waits for either. Counters for
-// performance are plain interlocked integers; they are read and reset once per second by
-// log_second. The time spent inside the log code itself is counted and printed too.
+//Layout: every line goes into a ring buffer under a short lock. A writer thread copies new lines
+//to the console and to the log file, so the thread that logs never waits for either. Counters for
+//performance are plain interlocked integers; they are read and reset once per second by
+//log_second. The time spent inside the log code itself is counted and printed too.
 #include "compat.h"
 #include "log.h"
 #include "gpu3d.h"
@@ -15,17 +15,17 @@
 
 #define RING_LINES 128
 #define LINE_LEN 220
-#define SLOW_FRAME_US 25000 // a frame longer than this is reported (a frame is 16.7 ms)
+#define SLOW_FRAME_US 25000 //a frame longer than this is reported (a frame is 16.7 ms)
 #define SLOW_SCENE_US 20000
 #define SLOW_PRESENT_US 40000
 #define SLOW_SAVE_US 15000
 #define SLOW_LINES_PER_SECOND 6
-#define QUIET_START_SECONDS 5.0 // no slow-picture reports while the program starts
+#define QUIET_START_SECONDS 5.0 //no slow-picture reports while the program starts
 #define KEEP_LOG_FILES 10
 
 static char ring[RING_LINES][LINE_LEN];
-static uint64_t ring_count; // lines ever written
-static uint64_t shown_count; // lines the writer thread has printed
+static uint64_t ring_count; //lines ever written
+static uint64_t shown_count; //lines the writer thread has printed
 static CRITICAL_SECTION ring_lock;
 static HANDLE ring_event;
 static int level = 1;
@@ -34,16 +34,16 @@ static int64_t qpc_freq, qpc_start;
 static FILE* log_out;
 static int log_open_tried;
 
-// performance counters, one writer thread each, read and cleared by log_second
+//performance counters, one writer thread each, read and cleared by log_second
 static volatile LONG frame_gap_max_us, scene_max_us, present_max_us;
 static volatile LONG scene_count, scene_sum_us, scene_polys;
 static volatile LONG slow_budget = SLOW_LINES_PER_SECOND;
-static volatile LONG64 quiet_until_ticks; // slow-picture lines and hints stay silent until then
-static char mode_name[32]; // how the window is shown, for the perf line. Guarded by ring_lock
-static int64_t last_frame_ticks; // game thread only
-static volatile LONG64 cost_ticks; // time the game's own threads spend inside the log code
+static volatile LONG64 quiet_until_ticks; //slow-picture lines and hints stay silent until then
+static char mode_name[32]; //how the window is shown, for the perf line. Guarded by ring_lock
+static int64_t last_frame_ticks; //game thread only
+static volatile LONG64 cost_ticks; //time the game's own threads spend inside the log code
 static volatile LONG64
-    writer_ticks; // time the writer thread spends writing (mostly waiting on the console)
+    writer_ticks; //time the writer thread spends writing (mostly waiting on the console)
 
 static int64_t now_ticks(void)
 {
@@ -67,7 +67,7 @@ static void add_cost(int64_t started)
   InterlockedExchangeAdd64(&cost_ticks, now_ticks() - started);
 }
 
-// keeps the largest value seen; several threads may race, a lost update only misses one sample
+//keeps the largest value seen; several threads may race, a lost update only misses one sample
 static void raise_max(volatile LONG* slot, LONG value)
 {
   LONG seen;
@@ -76,14 +76,14 @@ static void raise_max(volatile LONG* slot, LONG value)
       break;
 }
 
-// Slow-event lines are limited per second so a long stall cannot flood the console.
+//Slow-event lines are limited per second so a long stall cannot flood the console.
 static int take_slow_slot(void)
 {
   return level > 0 && InterlockedDecrement(&slow_budget) >= 0;
 }
 
-// True during start-up and right after a fullscreen switch: showing a picture is slow then, and
-// that is normal, so it must not be reported as a problem.
+//true during start-up and right after a fullscreen switch: showing a picture is slow then, and
+//that is normal, so it must not be reported as a problem.
 static int in_quiet(void)
 {
   return now_ticks() < quiet_until_ticks;
@@ -110,16 +110,16 @@ int log_level(void)
   return level;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The log file
-// ---------------------------------------------------------------------------------------------
+//---------------------------------------------------------------------------------------------
+//The log file
+//---------------------------------------------------------------------------------------------
 
 static int compare_names(const void* a, const void* b)
 {
   return strcmp((const char*)a, (const char*)b);
 }
 
-// Names contain the date and time, so sorting them sorts by age. The oldest go.
+//names contain the date and time, so sorting them sorts by age. The oldest go.
 static void prune_old_logs(void)
 {
   char names[64][48];
@@ -167,7 +167,7 @@ FILE* log_file(void)
 
 FILE* log_crash_begin(const char* reason)
 {
-  log_flush(); // lines queued before the crash reach the file first
+  log_flush(); //lines queued before the crash reach the file first
   FILE* f = log_file();
   if (f)
   {
@@ -179,9 +179,9 @@ FILE* log_crash_begin(const char* reason)
   return f;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Lines
-// ---------------------------------------------------------------------------------------------
+//---------------------------------------------------------------------------------------------
+//Lines
+//---------------------------------------------------------------------------------------------
 
 void log_msg(const char* tag, const char* fmt, ...)
 {
@@ -235,11 +235,11 @@ static DWORD WINAPI writer_thread(LPVOID unused)
       if (log_out)
       {
         fprintf(log_out, "%s\n", line);
-        fflush(log_out); // a crash must not lose the lines before it
+        fflush(log_out); //a crash must not lose the lines before it
       }
       InterlockedExchangeAdd64(&writer_ticks, now_ticks() - started);
       EnterCriticalSection(&ring_lock);
-      shown_count++; // counted as shown only after it is on screen and in the file
+      shown_count++; //counted as shown only after it is on screen and in the file
       LeaveCriticalSection(&ring_lock);
     }
   }
@@ -263,7 +263,7 @@ void log_init(void)
   if (setting && *setting)
     level = atoi(setting) < 0 ? 0 : atoi(setting) > 2 ? 2 : atoi(setting);
   if (!level)
-    return; // crash reports still work: log_file() opens the file when they need it
+    return; //crash reports still work: log_file() opens the file when they need it
   LARGE_INTEGER f;
   QueryPerformanceFrequency(&f);
   qpc_freq = f.QuadPart;
@@ -274,8 +274,8 @@ void log_init(void)
   ready = 1;
   log_quiet(QUIET_START_SECONDS);
 
-  // Clicking in a console window starts "quick edit" selection, which freezes every program that
-  // writes to it. Turn it off so a stray click cannot stop the game.
+  //clicking in a console window starts "quick edit" selection, which freezes every program that
+  //writes to it. Turn it off so a stray click cannot stop the game.
   HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
   DWORD mode;
   if (in && in != INVALID_HANDLE_VALUE && GetConsoleMode(in, &mode))
@@ -302,9 +302,9 @@ void log_flush(void)
   }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Counters
-// ---------------------------------------------------------------------------------------------
+//---------------------------------------------------------------------------------------------
+//Counters
+//---------------------------------------------------------------------------------------------
 
 void log_note_game_frame(void)
 {
@@ -362,9 +362,9 @@ void log_note_save(int64_t ticks, int ok)
     log_msg("save", "wrote the save in %.1f ms", us / 1000.0);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Once per second
-// ---------------------------------------------------------------------------------------------
+//---------------------------------------------------------------------------------------------
+//Once per second
+//---------------------------------------------------------------------------------------------
 
 static uint64_t filetime_value(FILETIME ft)
 {
@@ -393,13 +393,13 @@ void log_second(int game_fps, int shown_pictures)
   LONG present_max = InterlockedExchange(&present_max_us, 0);
   InterlockedExchange(&slow_budget, SLOW_LINES_PER_SECOND);
 
-  // CPU time used by this program, as "cores busy": 2.5 means the equivalent of two and a half
-  // cores were running. And how busy the whole PC was, which shows other programs taking the CPU.
+  //CPU time used by this program, as "cores busy": 2.5 means the equivalent of two and a half
+  //cores were running. And how busy the whole PC was, which shows other programs taking the CPU.
   FILETIME created, exited, kernel, user;
-  double game_cores = -1.0; // -1 until there is an earlier sample to compare with
+  double game_cores = -1.0; //-1 until there is an earlier sample to compare with
   if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user))
   {
-    uint64_t proc = filetime_value(kernel) + filetime_value(user); // units of 100 ns
+    uint64_t proc = filetime_value(kernel) + filetime_value(user); //units of 100 ns
     if (wall_before)
       game_cores =
           (double)(proc - proc_before) / 1e7 / ((double)(started - wall_before) / (double)qpc_freq);
@@ -408,10 +408,10 @@ void log_second(int game_fps, int shown_pictures)
   }
   int pc_cpu = sysinfo_pc_cpu_percent();
 
-  // a short reason when the numbers are off: the thing to look at first
+  //a short reason when the numbers are off: the thing to look at first
   const char* hint = "";
   if (in_quiet())
-    hint = ""; // start-up and window changes are not gameplay
+    hint = ""; //start-up and window changes are not gameplay
   else if (game_fps < 55)
     hint = "game is running slow";
   else if (shown_pictures < game_fps * 8 / 10)
@@ -449,7 +449,7 @@ void log_second(int game_fps, int shown_pictures)
   if (*mode_name)
     snprintf(mode_text, sizeof mode_text, " | mode %s", mode_name);
   LeaveCriticalSection(&ring_lock);
-  add_cost(started); // the work above; the lines below count themselves
+  add_cost(started); //the work above; the lines below count themselves
   log_msg("perf",
           "fps %2d | 3D %2d skip %d | screen %2d | scene %.1f/%.1f | frame %.1f | show %.1f%s",
           game_fps, scenes, skipped, shown_pictures, n ? sum / 1000.0 / n : 0.0, scene_max / 1000.0,

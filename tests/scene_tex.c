@@ -1,11 +1,11 @@
-// scene_tex.c: runs the texture cache over recorded scenes, in file order, like the game would.
+//scene_tex.c: runs the texture cache over recorded scenes, in file order, like the game would.
 //
-// Usage: scene_tex scenes/scene-A-001.dscn scenes/scene-A-002.dscn ...
-// Build from the project folder:
-//   clang -O2 -Iruntime -Itests tests/scene_tex.c runtime/scenedump.c runtime/texdecode.c \
-//     -o tests/scene_tex.exe
-// Why: shows how many different textures a scene uses, how much of that the cache already has,
-// and what decoding costs. These numbers decide how the texture upload for the GPU is built.
+//Usage: scene_tex scenes/scene-A-001.dscn scenes/scene-A-002.dscn ...
+//build from the project folder:
+//  clang -O2 -Iruntime -Itests tests/scene_tex.c runtime/scenedump.c runtime/texdecode.c \
+//    -o tests/scene_tex.exe
+//why: shows how many different textures a scene uses, how much of that the cache already has,
+//and what decoding costs. These numbers decide how the texture upload for the GPU is built.
 #include "scenedump.h"
 #include "texdecode.h"
 #include <stdio.h>

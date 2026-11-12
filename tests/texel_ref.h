@@ -1,7 +1,7 @@
-// texel_ref.h: the texel decoder as it was in runtime/gpu3d.c at commit 73a07ea, copied word for
-// word except for the names (ref_ prefix) and the memory arrays (ref_tex, ref_pal).
-// Why: texdecode.h moved this code. The tests compare the new code with this copy, so a mistake
-// in the move shows up. It is a test oracle only and is never built into the game.
+//texel_ref.h: the texel decoder as it was in runtime/gpu3d.c at commit 73a07ea, copied word for
+//word except for the names (ref_ prefix) and the memory arrays (ref_tex, ref_pal).
+//why: texdecode.h moved this code. The tests compare the new code with this copy, so a mistake
+//in the move shows up. It is a test oracle only and is never built into the game.
 #pragma once
 #include <stdint.h>
 
@@ -16,8 +16,8 @@ static inline uint8_t ref_tex8(uint32_t o)
 }
 static inline uint16_t ref_pal16(uint32_t o)
 {
-  o %= 0x18000; // 96 KB (6 slots of 16 KB). Careful: 0x17FFF does NOT work as a mask (it clears bit
-                // 15)
+  o %= 0x18000; //96 KB (6 slots of 16 KB). Careful: 0x17FFF does NOT work as a mask (it clears bit
+                //15)
   uint8_t* p = ref_pal[o >> 14];
   if (!p)
     return 0;
@@ -31,12 +31,12 @@ static inline uint16_t ref_media15(uint16_t c0, uint16_t c1, int p0, int p1, int
                     ((((c0 >> 10) & 31) * p0 + ((c1 >> 10) & 31) * p1) / div) << 10);
 }
 
-// Color of a texel (RGB555) and its alpha 0..31
+//Color of a texel (RGB555) and its alpha 0..31
 static uint16_t ref_texel(uint32_t ti, uint32_t pltt, int s, int t, int* alpha)
 {
   int w = 8 << ((ti >> 20) & 7), h = 8 << ((ti >> 23) & 7);
   if ((ti >> 16) & 1)
-  { // repetir S
+  { //repetir S
     if ((ti >> 18) & 1)
     {
       int per = s & (2 * w - 1);
@@ -67,33 +67,33 @@ static uint16_t ref_texel(uint32_t ti, uint32_t pltt, int s, int t, int* alpha)
   switch (fmt)
   {
   case 1:
-  { // A3I5
+  { //A3I5
     uint8_t b = ref_tex8(base + (uint32_t)(t * w + s));
     int a = b >> 5;
     *alpha = a * 4 + a / 2;
     return ref_pal16(pb + (b & 31) * 2);
   }
-  case 2: // 4 colores
+  case 2: //4 colores
     i = (ref_tex8(base + (uint32_t)((t * w + s) / 4)) >> ((s & 3) * 2)) & 3;
     if (trans0 && i == 0)
       *alpha = 0;
     return ref_pal16(pltt * 8 + i * 2);
-  case 3: // 16 colores
+  case 3: //16 colores
     i = (ref_tex8(base + (uint32_t)((t * w + s) / 2)) >> ((s & 1) * 4)) & 15;
     if (trans0 && i == 0)
       *alpha = 0;
     return ref_pal16(pb + i * 2);
-  case 4: // 256 colores
+  case 4: //256 colores
     i = ref_tex8(base + (uint32_t)(t * w + s));
     if (trans0 && i == 0)
       *alpha = 0;
     return ref_pal16(pb + i * 2);
   case 5:
-  { // compressed in 4x4 blocks
+  { //compressed in 4x4 blocks
     uint32_t raw_data = base + (uint32_t)((t / 4) * (w / 4) + s / 4) * 4;
     int idx = (ref_tex8(raw_data + (uint32_t)(t & 3)) >> ((s & 3) * 2)) & 3;
     uint32_t slot =
-        (raw_data & 0x7FFFF) >= 0x40000 ? 0x10000 : 0; // data in slot 2: indices in slot 1 + 64 KB
+        (raw_data & 0x7FFFF) >= 0x40000 ? 0x10000 : 0; //data in slot 2: indices in slot 1 + 64 KB
     uint32_t info_dir = 0x20000 + slot + ((raw_data & 0x1FFFF) >> 1);
     uint16_t info = (uint16_t)(ref_tex8(info_dir) | ref_tex8(info_dir + 1) << 8);
     uint32_t pdir = pb + (uint32_t)(info & 0x3FFF) * 4;
@@ -120,13 +120,13 @@ static uint16_t ref_texel(uint32_t ti, uint32_t pltt, int s, int t, int* alpha)
     }
   }
   case 6:
-  { // A5I3
+  { //A5I3
     uint8_t b = ref_tex8(base + (uint32_t)(t * w + s));
     *alpha = b >> 3;
     return ref_pal16(pb + (b & 7) * 2);
   }
   case 7:
-  { // color directo
+  { //color directo
     uint32_t o = base + (uint32_t)(t * w + s) * 2;
     uint16_t c = (uint16_t)(ref_tex8(o) | ref_tex8(o + 1) << 8);
     if (!(c & 0x8000))

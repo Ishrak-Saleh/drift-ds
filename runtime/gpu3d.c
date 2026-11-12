@@ -1,11 +1,11 @@
-// 3D engine of the DS: geometry (commands, matrices, lights, clipping) and rasterizer.
-// The game sends commands through the FIFO (0x04000400, packed 4 by 4) or
-// through direct ports (0x04000440 + 4 * (command - 0x10)). Vertices are
-// transformed on arrival and polygons are kept in a list. When the
-// game asks for SWAP_BUFFERS, on the next VBlank the whole list is painted into
-// an image of 256x192 that the 2D engine A uses as background 0.
-// Floating point is used (the DS uses fixed point): small differences of
-// rounding, but much simpler.
+//3D engine of the DS: geometry (commands, matrices, lights, clipping) and rasterizer.
+//The game sends commands through the FIFO (0x04000400, packed 4 by 4) or
+//through direct ports (0x04000440 + 4 * (command - 0x10)). Vertices are
+//transformed on arrival and polygons are kept in a list. When the
+//game asks for SWAP_BUFFERS, on the next VBlank the whole list is painted into
+//an image of 256x192 that the 2D engine A uses as background 0.
+//Floating point is used (the DS uses fixed point): small differences of
+//rounding, but much simpler.
 #include "gpu3d.h"
 #include "glctx.h"
 #include "glload.h"
@@ -21,20 +21,20 @@
 #include <stdlib.h>
 
 extern uint8_t *g_tex[4], *g_texpal[6];
-// copy of the texture and palette memory maps, taken when a scene is handed to the drawing thread.
-// video.c clears and refills g_tex and g_texpal every time the game remaps a VRAM bank, and the
-// drawing thread reading them in that gap got NULL, which came out as black pixels coming and going
-// on models in menus
+//copy of the texture and palette memory maps, taken when a scene is handed to the drawing thread.
+//video.c clears and refills g_tex and g_texpal every time the game remaps a VRAM bank, and the
+//drawing thread reading them in that gap got NULL, which came out as black pixels coming and going
+//on models in menus
 static TexMem snap;
-static GpuRaster* gpu; // the GPU drawing, made and used by the drawing thread only
-static int npp; // polygons drawn in the last scene
-// and a private copy of the CONTENT of the mapped texture and palette memory (about 600 KB, a few
-// tenths of a ms): the game keeps rewriting textures and palettes (the emblem, animated models)
-// while the drawing thread reads them, which gave torn or black pixels. The real DS draws a scene
-// from the memory as it is at the swap
+static GpuRaster* gpu; //the GPU drawing, made and used by the drawing thread only
+static int npp; //polygons drawn in the last scene
+//and a private copy of the CONTENT of the mapped texture and palette memory (about 600 KB, a few
+//tenths of a ms): the game keeps rewriting textures and palettes (the emblem, animated models)
+//while the drawing thread reads them, which gave torn or black pixels. The real DS draws a scene
+//from the memory as it is at the swap
 static uint8_t copy_tex[4][0x20000], copy_pal[6][0x4000];
 
-typedef float Mat[16]; // row by row. Row vector: v' = v * M
+typedef float Mat[16]; //row by row. Row vector: v' = v * M
 
 //---- state of the geometry engine ----
 static Mat proj, pos, vec, tex;
@@ -42,14 +42,14 @@ static Mat stack_proj[1], stack_pos[32], stack_vec[32], stack_tex[1];
 static int sp_proj, sp_pos, sp_tex, mode_mtx;
 static int error_stack;
 
-static uint32_t d_pl_min = 0xFFFF, d_pl_max; // PLTT_BASE received (debug)
-static uint32_t attr_pending, attr; // POLYGON_ATTR (applied at BEGIN_VTXS)
+static uint32_t d_pl_min = 0xFFFF, d_pl_max; //PLTT_BASE received (debug)
+static uint32_t attr_pending, attr; //POLYGON_ATTR (applied at BEGIN_VTXS)
 static uint32_t teximage, pltt_base;
 static int type_prim;
-static float vx, vy, vz; // last vertex (for VTX_XY, VTX_DIFF...)
+static float vx, vy, vz; //last vertex (for VTX_XY, VTX_DIFF...)
 static float col_r = 31, col_g = 31, col_b = 31;
-static float ts, tt; // current texture coordinates (in texels)
-static float ts0, tt0; // those given with TEXCOORD (for modes 2 and 3)
+static float ts, tt; //current texture coordinates (in texels)
+static float ts0, tt0; //those given with TEXCOORD (for modes 2 and 3)
 static uint32_t dif_amb, spe_emi;
 static float light_dir[4][3], light_col[4][3];
 static uint8_t brightness_table[128];
@@ -57,14 +57,14 @@ static int vp_x1, vp_y1 = 0, vp_x2 = 255, vp_y2 = 191;
 
 //---- polygon list (types in gpu3d_types.h) ----
 static Poly polys[2][MAX_POLYS];
-static int npolis[2], list; // list = the one being filled (with those that fall outside the view)
-static int nvisible[2]; // the ones seen (what the console counts)
+static int npolis[2], list; //list = the one being filled (with those that fall outside the view)
+static int nvisible[2]; //the ones seen (what the console counts)
 static int swap_pending, swap_param;
 
-static Vert strip[4]; // vertices waiting to form a polygon
+static Vert strip[4]; //vertices waiting to form a polygon
 static int ntira, nvert_prim, odd;
 
-// ---- matrices ----------------------------------------------------------------
+//---- matrices ----------------------------------------------------------------
 static void identity(float* m)
 {
   memset(m, 0, sizeof(Mat));
@@ -72,7 +72,7 @@ static void identity(float* m)
 }
 
 static void mult(float* dst, const float* a, const float* b)
-{ // dst = a * b
+{ //dst = a * b
   Mat r;
   for (int i = 0; i < 4; i++)
     for (int j = 0; j < 4; j++)
@@ -86,7 +86,7 @@ static void clip(float* m)
   mult(m, pos, proj);
 }
 
-// Applies a matrix (cur = m * cur) according to the mode
+//applies a matrix (cur = m * cur) according to the mode
 static void apply(const float* m, int also_vec)
 {
   switch (mode_mtx)
@@ -144,7 +144,7 @@ static float s10(uint32_t v, int bit, float div)
   return (float)x / div;
 }
 
-// ---- luces -------------------------------------------------------------------
+//---- luces -------------------------------------------------------------------
 static void color15(uint32_t c, float* r, float* g, float* b)
 {
   *r = (float)(c & 31);
@@ -155,11 +155,11 @@ static void color15(uint32_t c, float* r, float* g, float* b)
 static void normal(uint32_t p)
 {
   float n[3] = {s10(p, 0, 512), s10(p, 10, 512), s10(p, 20, 512)};
-  // texture coordinates from the normal (mode 2)
+  //texture coordinates from the normal (mode 2)
   if (((teximage >> 30) & 3) == 2)
   {
     ts = (n[0] * tex[0] + n[1] * tex[4] + n[2] * tex[8]) / 16 +
-         ts0; // the result is in 1/16 of a texel
+         ts0; //the result is in 1/16 of a texel
     tt = (n[0] * tex[1] + n[1] * tex[5] + n[2] * tex[9]) / 16 + tt0;
   }
   float tn[3];
@@ -268,8 +268,8 @@ static void emit(Vert* v, int n)
   if (npolis[list] >= MAX_POLYS)
     return;
   Poly* p = &polys[list][npolis[list]];
-  // also those outside the view (with n = 0): so the list of a scene and the one of the next
-  // have the same shape and can be paired for the in-between images
+  //also those outside the view (with n = 0): so the list of a scene and the one of the next
+  //have the same shape and can be paired for the in-between images
   memcpy(p->v, v, sizeof(Vert) * n);
   n = clip_poly(p->v, n);
   if (n < 3)
@@ -302,7 +302,7 @@ static void vertex(float x, float y, float z)
   v.g = col_g;
   v.b = col_b;
   if (((teximage >> 30) & 3) == 3)
-  { // texture coordinates from the vertex
+  { //texture coordinates from the vertex
     v.s = (x * tex[0] + y * tex[4] + z * tex[8]) / 16 + ts0;
     v.t = (x * tex[1] + y * tex[5] + z * tex[9]) / 16 + tt0;
   }
@@ -314,21 +314,21 @@ static void vertex(float x, float y, float z)
   strip[ntira++] = v;
   switch (type_prim)
   {
-  case 0: // triangles
+  case 0: //triangles
     if (ntira == 3)
     {
       emit(strip, 3);
       ntira = 0;
     }
     break;
-  case 1: // quads
+  case 1: //quads
     if (ntira == 4)
     {
       emit(strip, 4);
       ntira = 0;
     }
     break;
-  case 2: // triangle strip
+  case 2: //triangle strip
     if (ntira == 3)
     {
       Vert t[3] = {strip[0], strip[1], strip[2]};
@@ -344,7 +344,7 @@ static void vertex(float x, float y, float z)
       ntira = 2;
     }
     break;
-  case 3: // quad strip
+  case 3: //quad strip
     if (ntira == 4)
     {
       Vert q[4] = {strip[0], strip[1], strip[3], strip[2]};
@@ -386,7 +386,7 @@ static void run(int cmd, const uint32_t* p)
   case 0x10:
     mode_mtx = p[0] & 3;
     break;
-  case 0x11: // PUSH
+  case 0x11: //PUSH
     if (mode_mtx == 0)
     {
       memcpy(stack_proj[0], proj, sizeof(Mat));
@@ -410,7 +410,7 @@ static void run(int cmd, const uint32_t* p)
     }
     break;
   case 0x12:
-  { // POP
+  { //POP
     if (mode_mtx == 0)
     {
       sp_proj = 0;
@@ -442,7 +442,7 @@ static void run(int cmd, const uint32_t* p)
     }
     break;
   }
-  case 0x13: // STORE
+  case 0x13: //STORE
     if (mode_mtx == 0)
       memcpy(stack_proj[0], proj, sizeof(Mat));
     else if (mode_mtx == 3)
@@ -456,7 +456,7 @@ static void run(int cmd, const uint32_t* p)
       memcpy(stack_vec[n], vec, sizeof(Mat));
     }
     break;
-  case 0x14: // RESTORE
+  case 0x14: //RESTORE
     if (mode_mtx == 0)
       memcpy(proj, stack_proj[0], sizeof(Mat));
     else if (mode_mtx == 3)
@@ -503,7 +503,7 @@ static void run(int cmd, const uint32_t* p)
         m[i * 4 + j] = f12(p[i * 3 + j]);
     apply(m, 1);
     break;
-  case 0x1B: // SCALE (does not affect the vector matrix)
+  case 0x1B: //SCALE (does not affect the vector matrix)
     identity(m);
     m[0] = f12(p[0]);
     m[5] = f12(p[1]);
@@ -529,7 +529,7 @@ static void run(int cmd, const uint32_t* p)
     ts0 = s;
     tt0 = t;
     if (((teximage >> 30) & 3) == 1)
-    { // transformed by the texture matrix
+    { //transformed by the texture matrix
       ts = s * tex[0] + t * tex[4] + (tex[8] + tex[12]) / 16;
       tt = s * tex[1] + t * tex[5] + (tex[9] + tex[13]) / 16;
     }
@@ -555,7 +555,7 @@ static void run(int cmd, const uint32_t* p)
   case 0x27:
     vertex(vx, s16_12(p[0]), s16_12(p[0] >> 16));
     break;
-  case 0x28: // VTX_DIFF: 10 bit signed values added as they are in units of 4.12
+  case 0x28: //VTX_DIFF: 10 bit signed values added as they are in units of 4.12
     vertex(vx + s10(p[0], 0, 4096), vy + s10(p[0], 10, 4096), vz + s10(p[0], 20, 4096));
     break;
   case 0x29:
@@ -618,7 +618,7 @@ static void run(int cmd, const uint32_t* p)
     break;
   case 0x70:
     box_inside = 1;
-    break; // BOX_TEST: always "seen"
+    break; //BOX_TEST: always "seen"
   case 0x71:
   {
     Mat c;
@@ -641,8 +641,8 @@ static void run(int cmd, const uint32_t* p)
   }
 }
 
-// FIFO: packed commands (4 commands per word, then their parameters)
-static uint32_t fifo_cmds; // commands pending of the packed word
+//FIFO: packed commands (4 commands per word, then their parameters)
+static uint32_t fifo_cmds; //commands pending of the packed word
 static int fifo_ncmds;
 static uint32_t params[32];
 static int nparams, cmd_current = -1;
@@ -670,7 +670,7 @@ static void next_command(void)
     fifo_cmds >>= 8;
     fifo_ncmds--;
     if (c == 0)
-      continue; // NOP
+      continue; //NOP
     cmd_current = c;
     nparams = 0;
     if (!command_valid[c] || n_param[c] == 0)
@@ -690,7 +690,7 @@ static void fifo_write(uint32_t v)
       return;
     fifo_cmds = v;
     fifo_ncmds = 4;
-    // removes the trailing NOPs
+    //removes the trailing NOPs
     while (fifo_ncmds > 0 && ((fifo_cmds >> (8 * (fifo_ncmds - 1))) & 0xFF) == 0)
       fifo_ncmds--;
     next_command();
@@ -744,7 +744,7 @@ uint32_t gx_read(uint32_t a)
   Mat c;
   switch (a & ~3u)
   {
-  case 0x04000600: // GXSTAT: FIFO empty, nothing busy
+  case 0x04000600: //GXSTAT: FIFO empty, nothing busy
     return (uint32_t)box_inside << 1 | (uint32_t)(sp_pos & 31) << 8 | (uint32_t)sp_proj << 13 |
            (uint32_t)error_stack << 15 | 0x06000000;
   case 0x04000604:
@@ -780,55 +780,55 @@ void gx_init(void)
   identity(pos);
   identity(vec);
   identity(tex);
-  // the graphics card check happens at the launch: a PC without OpenGL 4.5 gets its message now,
-  // not at the first 3D scene
+  //the graphics card check happens at the launch: a PC without OpenGL 4.5 gets its message now,
+  //not at the first 3D scene
   start_threads();
 }
 
-// Drawing is done on the graphics card (gpuraster.c, OpenGL 4.5):
+//drawing is done on the graphics card (gpuraster.c, OpenGL 4.5):
 //- The geometry above builds the polygon list; the drawing thread hands it to gpuraster_draw, which
-// returns the colour and alpha pictures (the CPU rasterizer that was here is in git history, in
-// commit 73a07ea).
+//returns the colour and alpha pictures (the CPU rasterizer that was here is in git history, in
+//commit 73a07ea).
 //- Everything happens in a separate thread while the game prepares the next
-// scene. If the game finishes another scene before the previous one
-// ends, that one is skipped (better to lose a frame than slow the game).
+//scene. If the game finishes another scene before the previous one
+//ends, that one is skipped (better to lose a frame than slow the game).
 //- The thread owns an OpenGL context on a hidden window. If the PC cannot give one, the game
-// says so in a message box and a log line, and closes (there is no CPU fallback).
+//says so in a message box and a log line, and closes (there is no CPU fallback).
 #include "compat.h"
 
 typedef struct
-{ // what the painting thread needs (copied at the start of the scene)
+{ //what the painting thread needs (copied at the start of the scene)
   uint8_t io[0x400];
   int wbuf, vp_x1, vp_y1, vp_x2, vp_y2, lst;
 } Job;
 
 static Job job;
 
-// Rescale: the 3D is painted at esc times the DS resolution (DRIFT_SCALE, 1-4). output_* is at DS
-// size (for the 2D, the capture and the replays). output_hd_* is at big size (for the window).
+//Rescale: the 3D is painted at esc times the DS resolution (DRIFT_SCALE, 1-4). output_* is at DS
+//size (for the 2D, the capture and the replays). output_hd_* is at big size (for the window).
 #define MAXP (1024 * 768)
 static int esc = 1, AN = 256, AT = 192;
-static uint16_t color_buf[MAXP]; // RGB555
-static uint8_t alpha_buf[MAXP]; // 0..31 (0 = nada)
-// What was painted: a ring of 3 sets. The painting thread writes the one after the current. The
-// image build (another thread) uses the one it gets for a frame, without it being overwritten.
+static uint16_t color_buf[MAXP]; //RGB555
+static uint8_t alpha_buf[MAXP]; //0..31 (0 = nada)
+//what was painted: a ring of 3 sets. The painting thread writes the one after the current. The
+//image build (another thread) uses the one it gets for a frame, without it being overwritten.
 typedef struct
 {
-  uint16_t color[256 * 192]; // at DS size
+  uint16_t color[256 * 192]; //at DS size
   uint8_t alpha[256 * 192];
-  uint16_t hd_color[MAXP]; // at big size (rescale)
+  uint16_t hd_color[MAXP]; //at big size (rescale)
   uint8_t hd_alpha[MAXP];
 } Output;
 static Output outputs[3];
 static volatile int output_current, polys_last;
 static volatile uint64_t cont_frames, cont_skipped;
 
-// Scene dump (SCENE_DUMP=n in settings.ini, or DRIFT_SCENE_DUMP): saves n scenes, one about every
-// second, to scenes/. Each file has the registers, polygons, textures and palettes of the scene and
-// the picture this drawing made from them (scenedump.h). It is a developer tool for the GPU work:
-// the files hold game data and stay out of git. Writing slows the drawing thread, so scenes may be
-// skipped while it runs. With SCENE_DUMP_CAPTURE=1 only the scenes drawn with the screen capture on
-// (track presentation, ceremony) are saved, so the count is not used up by menus.
+//Scene dump (SCENE_DUMP=n in settings.ini, or DRIFT_SCENE_DUMP): saves n scenes, one about every
+//second, to scenes/. Each file has the registers, polygons, textures and palettes of the scene and
+//the picture this drawing made from them (scenedump.h). It is a developer tool for the GPU work:
+//the files hold game data and stay out of git. Writing slows the drawing thread, so scenes may be
+//skipped while it runs. With SCENE_DUMP_CAPTURE=1 only the scenes drawn with the screen capture on
+//(track presentation, ceremony) are saved, so the count is not used up by menus.
 #define DUMP_EVERY 60
 #define DUMP_EVERY_CAPTURE 10
 static int dump_left, dump_count, dump_capture_only;
@@ -860,13 +860,13 @@ static void dump_init(void)
           dump_capture_only ? ", capture scenes only" : "");
 }
 
-// called by the drawing thread when a scene is painted and before its buffers are reused
+//called by the drawing thread when a scene is painted and before its buffers are reused
 static void dump_scene(const Poly* lst, int n)
 {
   if (dump_left <= 0)
     return;
-  // while the screen capture is on (track presentation, ceremony) scenes are saved more often,
-  // because that is the case the GPU drawing has to get right and it is over in a few seconds
+  //while the screen capture is on (track presentation, ceremony) scenes are saved more often,
+  //because that is the case the GPU drawing has to get right and it is over in a few seconds
   int capture = (job.io[0x67] & 0x80) != 0;
   if (dump_capture_only && !capture)
     return;
@@ -901,10 +901,10 @@ static void dump_scene(const Poly* lst, int n)
 }
 
 static HANDLE ev_job, ev_free, ev_ready;
-static volatile int gpu_ok; // set by the drawing thread: 1 = the graphics card is ready
-static char gpu_err[300]; // why it was not, in plain words
+static volatile int gpu_ok; //set by the drawing thread: 1 = the graphics card is ready
+static char gpu_err[300]; //why it was not, in plain words
 
-// Makes the OpenGL context and the drawing on this thread, and tells start_threads how it went.
+//makes the OpenGL context and the drawing on this thread, and tells start_threads how it went.
 static int gpu_start(void)
 {
   GlCtx* ctx = glctx_create(gpu_err, sizeof gpu_err);
@@ -967,7 +967,7 @@ static DWORD WINAPI render_thread(LPVOID arg)
     {
       memcpy(S->hd_color, color_buf, (size_t)AN * AT * 2);
       memcpy(S->hd_alpha, alpha_buf, (size_t)AN * AT);
-      for (int y = 0; y < 192; y++) // at DS size: the central point of each block
+      for (int y = 0; y < 192; y++) //at DS size: the central point of each block
         for (int x = 0; x < 256; x++)
         {
           int i = (y * esc + esc / 2) * AN + x * esc + esc / 2;
@@ -982,7 +982,7 @@ static DWORD WINAPI render_thread(LPVOID arg)
     LARGE_INTEGER scene_end;
     QueryPerformanceCounter(&scene_end);
     log_note_scene(scene_end.QuadPart - scene_start.QuadPart, npp);
-    // where the time of a slow scene went (first 20 only, so the log stays short)
+    //where the time of a slow scene went (first 20 only, so the log stays short)
     static int split_lines;
     const GpuStats* st = gpuraster_stats(gpu);
     if (st->ms_build + st->ms_submit + st->ms_read + st->ms_unpack > 15 && split_lines++ < 20)
@@ -1007,7 +1007,7 @@ static void start_threads(void)
   HANDLE h = CreateThread(NULL, 0, render_thread, NULL, 0, NULL);
   SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL);
   CloseHandle(h);
-  // wait for the drawing thread to say whether the graphics card can do it
+  //wait for the drawing thread to say whether the graphics card can do it
   if (WaitForSingleObject(ev_ready, 20000) != WAIT_OBJECT_0)
   {
     snprintf(gpu_err, sizeof gpu_err, "the graphics driver did not answer");
@@ -1029,11 +1029,11 @@ static void start_threads(void)
   dump_init();
 }
 
-// With the capture on, the scene before the one just requested is shown: on the console the 3D
-// image of a frame is the one the game prepared in the previous one, and so each view lands on its
-// screen (otherwise, in the track presentation the top view came out below and the other way
-// round). Which one (indice_fixed) is fixed instead of waiting for the new one to be painted: that
-// wait slowed the ARM7 and the music in the presentation.
+//with the capture on, the scene before the one just requested is shown: on the console the 3D
+//image of a frame is the one the game prepared in the previous one, and so each view lands on its
+//screen (otherwise, in the track presentation the top view came out below and the other way
+//round). Which one (indice_fixed) is fixed instead of waiting for the new one to be painted: that
+//wait slowed the ARM7 and the music in the presentation.
 static volatile int fixed, indice_fixed;
 
 void gx_vblank(const uint8_t* io9)
@@ -1046,14 +1046,14 @@ void gx_vblank(const uint8_t* io9)
   swap_pending = 0;
   if (!ev_job)
     start_threads();
-  // With screen capture on (3D on both screens: track presentation, ceremony)
-  // the game alternates the top and bottom view every frame. There the scene is painted right away:
-  // if it came out a frame late (the normal case, to not slow the game) the two views would be
-  // mixed.
+  //with screen capture on (3D on both screens: track presentation, ceremony)
+  //the game alternates the top and bottom view every frame. There the scene is painted right away:
+  //if it came out a frame late (the normal case, to not slow the game) the two views would be
+  //mixed.
   int immediate = capture;
   if (WaitForSingleObject(ev_free, immediate ? INFINITE : 0) != WAIT_OBJECT_0)
   {
-    // the previous scene is still being painted: this one is skipped and the game does not wait
+    //the previous scene is still being painted: this one is skipped and the game does not wait
     npolis[list] = nvisible[list] = 0;
     cont_skipped++;
     return;
@@ -1065,15 +1065,15 @@ void gx_vblank(const uint8_t* io9)
   job.vp_x2 = vp_x2;
   job.vp_y2 = vp_y2;
   job.lst = list;
-  list ^= 1; // the other list starts to be filled now
+  list ^= 1; //the other list starts to be filled now
   npolis[list] = nvisible[list] = 0;
   if (immediate)
-  { // the previous one is already painted (waited above): that is the one shown
+  { //the previous one is already painted (waited above): that is the one shown
     indice_fixed = output_current;
     fixed = 1;
   }
   for (int q = 0; q < 4; q++)
-  { // maps and contents as they are at this swap (the game thread is the only writer of the maps)
+  { //maps and contents as they are at this swap (the game thread is the only writer of the maps)
     snap.tex[q] = g_tex[q] ? copy_tex[q] : NULL;
     if (g_tex[q])
       memcpy(copy_tex[q], g_tex[q], 0x20000);
@@ -1091,9 +1091,9 @@ int gx_indice(void)
 {
   return fixed ? indice_fixed : output_current;
 }
-// the same buffers for a fixed output set i (read gx_indice() once and use these, so colour, alpha
-// and the big copies all come from the same scene even if a newer scene finishes while the picture
-// is being copied)
+//the same buffers for a fixed output set i (read gx_indice() once and use these, so colour, alpha
+//and the big copies all come from the same scene even if a newer scene finishes while the picture
+//is being copied)
 const uint16_t* gx_color_of(int i)
 {
   return outputs[i].color;
@@ -1130,12 +1130,12 @@ const uint8_t* gx_hd_alpha(void)
 {
   return outputs[gx_indice()].hd_alpha;
 }
-// in-between images of output set i (from the previous scene to that one): how many and each one
+//in-between images of output set i (from the previous scene to that one): how many and each one
 uint64_t gx_frames(void)
 {
   return cont_frames;
 }
-// scenes that were dropped because the previous one was still being painted
+//scenes that were dropped because the previous one was still being painted
 uint64_t gx_skipped(void)
 {
   return cont_skipped;

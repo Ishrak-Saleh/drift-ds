@@ -1,6 +1,6 @@
-// State of the processors (ARM9 and ARM7) and helpers used by the translated code.
-// The ARM7 code is compiled with -DCPU7: so its rd32/wr32... use the memory map
-// of the ARM7.
+//State of the processors (ARM9 and ARM7) and helpers used by the translated code.
+//The ARM7 code is compiled with -DCPU7: so its rd32/wr32... use the memory map
+//of the ARM7.
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
@@ -9,15 +9,15 @@
 typedef struct Cpu
 {
   uint32_t r[16];
-  uint32_t n, z, c, v, q; // flags of the CPSR, each 0 or 1
-  uint32_t ctl; // bits 0-7 of the CPSR: mode, I, F, T
+  uint32_t n, z, c, v, q; //flags of the CPSR, each 0 or 1
+  uint32_t ctl; //bits 0-7 of the CPSR: mode, I, F, T
   uint32_t spsr;
-  uint32_t bank_r13[16], bank_r14[16], bank_spsr[16]; // per mode (ctl & 15)
-  int id; // 0 = ARM9, 1 = ARM7
+  uint32_t bank_r13[16], bank_r14[16], bank_spsr[16]; //per mode (ctl & 15)
+  int id; //0 = ARM9, 1 = ARM7
   int32_t cycles; //"budget": when it runs out the hardware is looked at (cpu_tick)
-  volatile uint32_t func; // translated function being run (for debugging)
-  // return address handed over by a tail call or branch to another translated function. 0 = none.
-  // the callee uses it as its entry_lr instead of r14, which an inner bl may have overwritten
+  volatile uint32_t func; //translated function being run (for debugging)
+  //return address handed over by a tail call or branch to another translated function. 0 = none.
+  //the callee uses it as its entry_lr instead of r14, which an inner bl may have overwritten
   uint32_t elr;
 } Cpu;
 
@@ -26,16 +26,16 @@ typedef struct
 {
   uint32_t key;
   Func fn;
-} FuncEntry; // key = address | 1 if Thumb
+} FuncEntry; //key = address | 1 if Thumb
 extern const FuncEntry g_funcs[], g_funcs7[];
 extern const size_t g_nfuncs, g_nfuncs7;
 
-// ARM9 overlays: several functions can share an address. The "signature"
+//ARM9 overlays: several functions can share an address. The "signature"
 //(its first 4 bytes) says which one is loaded in memory now.
-// ARM9 overlays: several functions can share an address. the signature, their first 4 bytes, tells
-// which one is loaded now signature2 is 0 for most entries. it holds a hash of 64 bytes only when
-// two overlays have a function at the same address with the same short signature. search_ov in
-// cpu.c then compares the hash with memory to pick the right one
+//ARM9 overlays: several functions can share an address. the signature, their first 4 bytes, tells
+//which one is loaded now signature2 is 0 for most entries. it holds a hash of 64 bytes only when
+//two overlays have a function at the same address with the same short signature. search_ov in
+//cpu.c then compares the hash with memory to pick the right one
 typedef struct
 {
   uint32_t key;
@@ -53,10 +53,10 @@ extern const size_t g_noverlays;
 
 #define R (c->r)
 
-void dispatch(Cpu* c, uint32_t target); // ARM9
-void dispatch7(Cpu* c, uint32_t target); // ARM7
-void cpu_call(Cpu* c, uint32_t target); // either of the two according to c->id
-void cpu_tick(Cpu* c); // hardware, interrupts and turn of the other processor
+void dispatch(Cpu* c, uint32_t target); //ARM9
+void dispatch7(Cpu* c, uint32_t target); //ARM7
+void cpu_call(Cpu* c, uint32_t target); //either of the two according to c->id
+void cpu_tick(Cpu* c); //hardware, interrupts and turn of the other processor
 _Noreturn void cpu_undefined(Cpu* c, uint32_t addr, uint32_t op);
 _Noreturn void cpu_missing(Cpu* c, uint32_t addr);
 uint32_t cpu_get_cpsr(Cpu* c);
@@ -68,7 +68,7 @@ uint32_t cp15_read(Cpu* c, int crn, int crm, int op1, int op2);
 void cp15_write(Cpu* c, int crn, int crm, int op1, int op2, uint32_t v);
 void bios_swi(Cpu* c, uint32_t n);
 
-// user mode register r (for ldm/stm with "^")
+//user mode register r (for ldm/stm with "^")
 static inline uint32_t* cpu_usr(Cpu* c, int r)
 {
   uint32_t m = c->ctl & 15;
@@ -77,14 +77,14 @@ static inline uint32_t* cpu_usr(Cpu* c, int r)
   return r == 13 ? &c->bank_r13[0] : &c->bank_r14[0];
 }
 
-// threads of the DS operating system (threads.c)
+//threads of the DS operating system (threads.c)
 void hle_save_context(Cpu* c);
 void hle_load_context(Cpu* c);
-void hle_init_context(Cpu* c); // a new thread reuses this context
+void hle_init_context(Cpu* c); //a new thread reuses this context
 
 void** hle_ctx_buf(Cpu* c, uint32_t ctx);
 
-// ---- memory ---------------------------------------------------------------
+//---- memory ---------------------------------------------------------------
 extern uint8_t g_main[0x400000];
 extern uint8_t g_itcm[0x8000];
 extern uint8_t g_dtcm[0x4000];
@@ -102,7 +102,7 @@ void mem7_wr8(uint32_t a, uint32_t v);
 void mem7_wr16(uint32_t a, uint32_t v);
 void mem7_wr32(uint32_t a, uint32_t v);
 
-// Fast path: main RAM (0x02xxxxxx). On the ARM9, except where the DTCM is.
+//Fast path: main RAM (0x02xxxxxx). On the ARM9, except where the DTCM is.
 #define EN_MAIN9(a) (((a) >> 24) == 2 && (uint32_t)((a) - g_dtcm_base) >= 0x4000)
 #define EN_MAIN7(a) (((a) >> 24) == 2)
 
@@ -169,7 +169,7 @@ void mem7_wr32(uint32_t a, uint32_t v);
 ACCESOS(_9, EN_MAIN9, mem_)
 ACCESOS(_7, EN_MAIN7, mem7_)
 
-// The translated code uses rd32() etc.: of the ARM9 or of the ARM7 depending on how it is compiled
+//the translated code uses rd32() etc.: of the ARM9 or of the ARM7 depending on how it is compiled
 #ifdef CPU7
 #define rd8 rd8_7
 #define rd16 rd16_7
@@ -186,7 +186,7 @@ ACCESOS(_7, EN_MAIN7, mem7_)
 #define wr32 wr32_9
 #endif
 
-// For the runtime, which works with both processors
+//for the runtime, which works with both processors
 static inline uint32_t brd8(Cpu* c, uint32_t a)
 {
   return c->id ? rd8_7(a) : rd8_9(a);
@@ -221,13 +221,13 @@ static inline void bwr32(Cpu* c, uint32_t a, uint32_t v)
     wr32_9(a, v);
 }
 
-// ---- operaciones -----------------------------------------------------------
+//---- operaciones -----------------------------------------------------------
 static inline uint32_t ror32(uint32_t v, uint32_t s)
 {
   s &= 31;
   return s ? (v >> s) | (v << (32 - s)) : v;
 }
-// LDR with unaligned address: reads aligned and rotates
+//LDR with unaligned address: reads aligned and rotates
 static inline uint32_t ldr32(uint32_t a)
 {
   return ror32(rd32(a), (a & 3) * 8);
@@ -282,7 +282,7 @@ static inline uint32_t sbc_f(Cpu* c, uint32_t a, uint32_t b)
   return r;
 }
 
-// shifts by register, with the bit that comes out (carry)
+//shifts by register, with the bit that comes out (carry)
 static inline uint32_t lsl_c(uint32_t v, uint32_t s, uint32_t* cy)
 {
   if (s == 0)
@@ -333,7 +333,7 @@ static inline uint32_t ror_c(uint32_t v, uint32_t s, uint32_t* cy)
   return (v >> s) | (v << (32 - s));
 }
 
-// saturated arithmetic (QADD and company) of the ARMv5TE
+//saturated arithmetic (QADD and company) of the ARMv5TE
 static inline uint32_t qadd(Cpu* c, uint32_t a, uint32_t b)
 {
   int64_t r = (int64_t)(int32_t)a + (int32_t)b;

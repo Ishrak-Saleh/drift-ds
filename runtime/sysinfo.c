@@ -1,4 +1,4 @@
-// Machine details for the log: see sysinfo.h.
+//Machine details for the log: see sysinfo.h.
 #include "compat.h"
 #include "sysinfo.h"
 #include "log.h"
@@ -11,13 +11,13 @@ void sysinfo_log_machine(void)
   RegGetValueA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
                "ProcessorNameString", RRF_RT_REG_SZ, NULL, cpu, &size);
   const char* name = cpu;
-  while (*name == ' ') // the registry value often has leading spaces
+  while (*name == ' ') //the registry value often has leading spaces
     name++;
   SYSTEM_INFO si;
   GetSystemInfo(&si);
   log_msg("system", "%s, %lu logical cores", name, (unsigned long)si.dwNumberOfProcessors);
 
-  // GetVersionEx lies on current Windows; RtlGetVersion tells the truth
+  //GetVersionEx lies on current Windows; RtlGetVersion tells the truth
   typedef LONG(WINAPI * RtlGetVersionFn)(OSVERSIONINFOW*);
   OSVERSIONINFOW os;
   memset(&os, 0, sizeof os);
@@ -34,7 +34,7 @@ void sysinfo_log_machine(void)
             (unsigned long long)(mem.ullTotalPhys >> 20),
             (unsigned long long)(mem.ullAvailPhys >> 20));
 
-  // On battery or in battery saver Windows slows the CPU: the first thing to rule out for stutter.
+  //on battery or in battery saver Windows slows the CPU: the first thing to rule out for stutter.
   SYSTEM_POWER_STATUS power;
   if (GetSystemPowerStatus(&power))
   {
@@ -49,8 +49,8 @@ void sysinfo_log_machine(void)
 
 void sysinfo_log_display(void* hwnd)
 {
-  // A 60 Hz monitor cannot show more than 60 pictures a second, and a window on a second monitor
-  // can have a different refresh rate than the main one.
+  //a 60 Hz monitor cannot show more than 60 pictures a second, and a window on a second monitor
+  //can have a different refresh rate than the main one.
   MONITORINFOEXW mi;
   memset(&mi, 0, sizeof mi);
   mi.cbSize = sizeof mi;
@@ -84,8 +84,8 @@ int sysinfo_pick_mode(void* hwnd, int want_w, int want_h, int* width, int* heigh
   device[31] = 0;
 
   int w = want_w > 0 ? want_w : *desktop_w, h = want_h > 0 ? want_h : *desktop_h;
-  // Score of a refresh rate for this size: the desktop's own rate wins, then the highest below it,
-  // then the highest above it. 0 and 1 Hz mean "hardware default" and are skipped
+  //Score of a refresh rate for this size: the desktop's own rate wins, then the highest below it,
+  //then the highest above it. 0 and 1 Hz mean "hardware default" and are skipped
   long best_score = -1;
   int best_hz = 0;
   for (DWORD i = 0;; i++)
@@ -109,8 +109,8 @@ int sysinfo_pick_mode(void* hwnd, int want_w, int want_h, int* width, int* heigh
   if (best_score < 0)
   {
     if (w != *desktop_w || h != *desktop_h)
-      return 0; // the size is not offered by this monitor
-    best_hz = *desktop_hz; // the desktop's own mode is always usable
+      return 0; //the size is not offered by this monitor
+    best_hz = *desktop_hz; //the desktop's own mode is always usable
   }
   *width = w;
   *height = h;
@@ -146,7 +146,7 @@ int sysinfo_pc_cpu_percent(void)
   FILETIME idle, kernel, user;
   if (!GetSystemTimes(&idle, &kernel, &user))
     return -1;
-  uint64_t total = filetime_value(kernel) + filetime_value(user); // kernel time includes idle
+  uint64_t total = filetime_value(kernel) + filetime_value(user); //kernel time includes idle
   uint64_t idle_time = filetime_value(idle);
   int percent = -1;
   if (total_before && total > total_before)

@@ -1,12 +1,12 @@
-// The Nintendo sound driver (in the translated ARM7) programs the channels
-// by writing at 0x04000400 + 16 * channel:
+//the Nintendo sound driver (in the translated ARM7) programs the channels
+//by writing at 0x04000400 + 16 * channel:
 //+0 CNT  volume (0-6), divider (8-9), pan (16-22), PSG duty (24-26),
-// repeat (27-28: 0 manual, 1 loop, 2 once), format (29-30:
-// PCM8, PCM16, ADPCM, PSG/noise), running (31)
+//repeat (27-28: 0 manual, 1 loop, 2 once), format (29-30:
+//PCM8, PCM16, ADPCM, PSG/noise), running (31)
 //+4 SAD  address of the samples    +8 TMR  frequency (16.76 MHz / (0x10000 - TMR))
 //+A PNT  loop start (words)  +C LEN  length after the loop (words)
-// and at 0x04000500 the master volume.
-#include "compat.h" // before cpu.h: its R macro clashes with windows.h
+//and at 0x04000500 the master volume.
+#include "compat.h" //before cpu.h: its R macro clashes with windows.h
 #include <mmsystem.h>
 #include "ds.h"
 #include "log.h"
@@ -14,27 +14,27 @@
 #include <stdlib.h>
 
 #define FREQ 32768
-#define SAMPLES 512 // per buffer (stereo, 16 bits)
+#define SAMPLES 512 //per buffer (stereo, 16 bits)
 #define NBUF 6
 #define CLOCK_SOUND (33513982.0 / 2)
 
 extern uint8_t* ds_io7(void);
-volatile uint32_t g_snd_gen[16]; // changes each time the game starts a channel
+volatile uint32_t g_snd_gen[16]; //changes each time the game starts a channel
 
 typedef struct
 {
   uint32_t gen;
   int active;
-  double pos; // in samples
+  double pos; //in samples
   int16_t adpcm, adpcm_loop;
   int idx, idx_loop, loop_stored;
-  uint32_t last; // last decoded ADPCM sample (index)
+  uint32_t last; //last decoded ADPCM sample (index)
   uint16_t lfsr;
   int16_t current;
 } Channel;
 
 static Channel channel[16];
-static volatile int volume = 100, mute; // from the menu (0-100)
+static volatile int volume = 100, mute; //from the menu (0-100)
 
 static const int adpcm_idx[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
 static const uint16_t adpcm_step[89] = {
@@ -89,14 +89,14 @@ static void reset(Channel* c, uint32_t sad)
   c->loop_stored = 0;
   c->last = 0;
   c->lfsr = 0x7FFF;
-  uint32_t h = rd32_7(sad); // ADPCM: header with the first sample and the index
+  uint32_t h = rd32_7(sad); //ADPCM: header with the first sample and the index
   c->adpcm = (int16_t)(h & 0xFFFF);
   c->idx = (int)((h >> 16) & 0x7F);
   if (c->idx > 88)
     c->idx = 88;
 }
 
-// One sample of channel n (and advances)
+//one sample of channel n (and advances)
 static int16_t show(int n, const uint8_t* io, double step)
 {
   Channel* c = &channel[n];
@@ -131,7 +131,7 @@ static int16_t show(int n, const uint8_t* io, double step)
   if (p >= total)
   {
     if (rep == 2 || total == 0)
-    { // once: it ended
+    { //once: it ended
       c->active = 0;
       uint8_t* w = ds_io7();
       w[o + 3] &= 0x7F;
@@ -172,12 +172,12 @@ static int16_t show(int n, const uint8_t* io, double step)
     break;
   default:
     if (n >= 8 && n <= 13)
-    { // onda cuadrada
+    { //onda cuadrada
       int cycle = (cnt >> 24) & 7;
       s = ((p & 7) <= (uint32_t)cycle) ? 0x7FFF : -0x7FFF;
     }
     else if (n >= 14)
-    { // ruido
+    { //ruido
       uint32_t before = (uint32_t)(c->pos - step);
       for (uint32_t k = before; k < p; k++)
       {
@@ -279,7 +279,7 @@ static DWORD WINAPI thread_sound(LPVOID p)
 
 void sound_init(void)
 {
-  const char* vol = getenv("DRIFT_VOLUME"); // settings.ini: volume 0-100 and mute
+  const char* vol = getenv("DRIFT_VOLUME"); //settings.ini: volume 0-100 and mute
   if (vol)
   {
     int v = atoi(vol);

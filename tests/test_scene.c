@@ -1,9 +1,9 @@
-// test_scene.c: checks for runtime/scenedump.c and tests/scenecmp.c. No framework, prints one line
-// per failure. Run it from an empty scratch folder, it writes a few small files there.
-// Build and run from the project folder:
-//   clang -Iruntime -Itests tests/test_scene.c runtime/scenedump.c tests/scenecmp.c \
-//     -o tests/test_scene.exe
-//   (cd scratch && ../tests/test_scene.exe)
+//test_scene.c: checks for runtime/scenedump.c and tests/scenecmp.c. No framework, prints one line
+//per failure. Run it from an empty scratch folder, it writes a few small files there.
+//build and run from the project folder:
+//  clang -Iruntime -Itests tests/test_scene.c runtime/scenedump.c tests/scenecmp.c \
+//    -o tests/test_scene.exe
+//  (cd scratch && ../tests/test_scene.exe)
 #include "scenecmp.h"
 #include "scenedump.h"
 #include <stdio.h>
@@ -32,7 +32,7 @@ static long file_size(const char* path)
   return n;
 }
 
-// copies the first n bytes of a file (n < 0: the whole file) and appends `extra` zero bytes
+//copies the first n bytes of a file (n < 0: the whole file) and appends `extra` zero bytes
 static void copy_file(const char* from, const char* to, long n, int extra)
 {
   FILE* a = fopen(from, "rb");
@@ -99,7 +99,7 @@ static void test_roundtrip(void)
   s.color = color;
   s.alpha = alpha;
   CHECK(scenedump_write("a.dscn", &s));
-  CHECK(file_size("a.tmp") < 0 && file_size("a.dscn.tmp") < 0); // no temporary file left behind
+  CHECK(file_size("a.tmp") < 0 && file_size("a.dscn.tmp") < 0); //no temporary file left behind
 
   Scene r;
   CHECK(scenedump_read("a.dscn", &r));
@@ -117,10 +117,10 @@ static void test_roundtrip(void)
   scenedump_free(&r);
   CHECK(r.io == NULL && r.polys == NULL);
 
-  // writing again over an existing file works
+  //writing again over an existing file works
   CHECK(scenedump_write("a.dscn", &s));
 
-  // bad input is rejected and nothing is returned
+  //bad input is rejected and nothing is returned
   long n = file_size("a.dscn");
   CHECK(n > 0);
   copy_file("a.dscn", "short.dscn", n - 1, 0);
@@ -133,7 +133,7 @@ static void test_roundtrip(void)
   CHECK(!scenedump_read(NULL, &r));
   CHECK(!scenedump_read("a.dscn", NULL));
 
-  // damaged header fields: magic, version and Poly size are checked
+  //damaged header fields: magic, version and Poly size are checked
   FILE* f = fopen("magic.dscn", "wb");
   copy_file("a.dscn", "magic.dscn", -1, 0);
   if (f)
@@ -164,7 +164,7 @@ static void test_roundtrip(void)
   }
   CHECK(!scenedump_read("poly.dscn", &r));
 
-  // write refuses bad input
+  //write refuses bad input
   Scene bad = s;
   bad.scale = 5;
   CHECK(!scenedump_write("bad.dscn", &bad));
@@ -200,33 +200,33 @@ static void test_compare(void)
   CmpResult r = cmp_pictures(rc, ra, gc, ga, W, H, NULL, dif);
   CHECK(r.pass && r.differing == 0 && r.worst == 0 && r.total == W * H && r.percent == 0.0);
 
-  // every pixel off by one step is rounding
+  //every pixel off by one step is rounding
   for (int i = 0; i < W * H; i++)
     gc[i] = (uint16_t)(rc[i] + 1);
   r = cmp_pictures(rc, ra, gc, ga, W, H, NULL, dif);
   CHECK(r.pass && r.differing == 0 && dif[100] == 1);
 
-  // one pixel off by 10 steps in a flat area: the share is small but the step is too big
+  //one pixel off by 10 steps in a flat area: the share is small but the step is too big
   flat(0x2A55, 31);
   gc[W * 20 + 30] = (uint16_t)(rc[0] + 10);
   r = cmp_pictures(rc, ra, gc, ga, W, H, NULL, dif);
   CHECK(!r.pass && r.differing == 1 && r.worst == 10 && dif[W * 20 + 30] == 3);
 
-  // many pixels off by 2 steps: each one is small but together they pass the 0.1 percent
+  //many pixels off by 2 steps: each one is small but together they pass the 0.1 percent
   flat(0x2A55, 31);
   for (int i = 0; i < 20; i++)
     gc[i * 7] = (uint16_t)(rc[0] + 2);
   r = cmp_pictures(rc, ra, gc, ga, W, H, NULL, NULL);
   CHECK(!r.pass && r.differing == 20 && r.worst == 2 && r.percent > 0.1);
 
-  // three pixels off by 2 in 3072 are about 0.098 percent: pass
+  //three pixels off by 2 in 3072 are about 0.098 percent: pass
   flat(0x2A55, 31);
   for (int i = 0; i < 3; i++)
     gc[i * 11] = (uint16_t)(rc[0] + 2);
   r = cmp_pictures(rc, ra, gc, ga, W, H, NULL, NULL);
   CHECK(r.pass && r.differing == 3 && r.percent < 0.1);
 
-  // a boundary between two colours moved by one column: those pixels are edge, not counted
+  //a boundary between two colours moved by one column: those pixels are edge, not counted
   flat(0x0000, 31);
   for (int y = 0; y < H; y++)
     for (int x = 0; x < W; x++)
@@ -237,8 +237,8 @@ static void test_compare(void)
   r = cmp_pictures(rc, ra, gc, ga, W, H, NULL, dif);
   CHECK(r.pass && r.edge == H && r.differing == 0 && dif[5 * W + 32] == 2);
 
-  // low contrast boundary (4 steps, not an edge): a pixel that shows its neighbour's colour is
-  // shifted, counted on its own and not as differing
+  //low contrast boundary (4 steps, not an edge): a pixel that shows its neighbour's colour is
+  //shifted, counted on its own and not as differing
   flat(0x0000, 31);
   for (int y = 0; y < H; y++)
     for (int x = 0; x < W; x++)
@@ -247,39 +247,47 @@ static void test_compare(void)
   r = cmp_pictures(rc, ra, gc, ga, W, H, NULL, dif);
   CHECK(r.pass && r.shifted == 1 && r.differing == 0 && r.edge == 0 && dif[10 * W + 31] == 5);
 
-  // a colour that no neighbour has is differing, not shifted
+  //a pixel that shows the colour of a neighbour two pixels away is shifted as well
+  gc[10 * W + 31] = 0x0000;
+  gc[10 * W + 30] = 0x0004;
+  r = cmp_pictures(rc, ra, gc, ga, W, H, NULL, dif);
+  CHECK(r.pass && r.shifted == 1 && dif[10 * W + 30] == 5);
+  gc[10 * W + 30] = 0x0000;
+  gc[10 * W + 31] = 0x0004;
+
+  //a colour that no neighbour has is differing, not shifted
   gc[10 * W + 31] = 0x0009;
   r = cmp_pictures(rc, ra, gc, ga, W, H, NULL, dif);
   CHECK(!r.pass && r.shifted == 0 && r.differing == 1 && r.worst == 9);
 
-  // too many shifted pixels fail as well: 0.1 percent is the limit for them too
+  //too many shifted pixels fail as well: 0.1 percent is the limit for them too
   gc[10 * W + 31] = 0x0000;
   for (int y = 0; y < 10; y++)
     gc[y * W + 31] = 0x0004;
   r = cmp_pictures(rc, ra, gc, ga, W, H, NULL, NULL);
   CHECK(!r.pass && r.shifted == 10 && r.differing == 0 && r.shifted_percent > 0.1);
 
-  // transparency wrong in a flat area
+  //transparency wrong in a flat area
   flat(0x2A55, 31);
   ga[W * 10 + 10] = 0;
   r = cmp_pictures(rc, ra, gc, ga, W, H, NULL, dif);
   CHECK(!r.pass && r.alpha_wrong == 1 && dif[W * 10 + 10] == 4);
 
-  // colour of a pixel that is transparent in both pictures does not matter
+  //colour of a pixel that is transparent in both pictures does not matter
   flat(0x2A55, 0);
   for (int i = 0; i < W * H; i++)
     gc[i] = 0x7FFF;
   r = cmp_pictures(rc, ra, gc, ga, W, H, NULL, NULL);
   CHECK(r.pass && r.differing == 0);
 
-  // a stricter rule from the caller is used
+  //a stricter rule from the caller is used
   flat(0x2A55, 31);
   gc[5] = (uint16_t)(rc[0] + 2);
   CmpRule strict = {0, 1, 0.0, 4};
   r = cmp_pictures(rc, ra, gc, ga, W, H, &strict, NULL);
   CHECK(!r.pass && r.differing == 1);
 
-  // missing pictures never pass
+  //missing pictures never pass
   r = cmp_pictures(NULL, ra, gc, ga, W, H, NULL, NULL);
   CHECK(!r.pass);
   r = cmp_pictures(rc, ra, gc, ga, 0, H, NULL, NULL);

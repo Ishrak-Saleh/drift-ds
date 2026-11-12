@@ -1,4 +1,4 @@
-// Scene dump: saves one 3D scene to a file, and reads it back. See scenedump.h.
+//Scene dump: saves one 3D scene to a file, and reads it back. See scenedump.h.
 #include "scenedump.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,7 +53,7 @@ int scenedump_write(const char* path, const Scene* s)
   ok = (fclose(f) == 0) && ok;
   if (ok)
   {
-    remove(path); // Windows will not rename over an existing file
+    remove(path); //Windows will not rename over an existing file
     ok = rename(tmp, path) == 0;
   }
   if (!ok)
@@ -90,7 +90,7 @@ int scenedump_read(const char* path, Scene* out)
   size_t sz_io = 0x400, sz_tex = ntex * SCENE_TEX_SIZE, sz_pal = npal * SCENE_PAL_SIZE;
   size_t sz_poly = (size_t)h.npolys * sizeof(Poly), sz_col = pixels * 2, sz_alpha = pixels;
   size_t total = sz_io + sz_tex + sz_pal + sz_poly + sz_col + sz_alpha;
-  // the file must be exactly as long as the header says
+  //the file must be exactly as long as the header says
   if (fseek(f, 0, SEEK_END) != 0)
   {
     fclose(f);
@@ -110,7 +110,7 @@ int scenedump_read(const char* path, Scene* out)
     return 0;
   }
   fclose(f);
-  // all pieces start at a multiple of 4 inside the block (sizes above are), so the casts are safe
+  //all pieces start at a multiple of 4 inside the block (sizes above are), so the casts are safe
   uint8_t* p = block;
   out->io = p;
   p += sz_io;
@@ -145,6 +145,6 @@ void scenedump_free(Scene* s)
 {
   if (!s)
     return;
-  free((void*)s->io); // io is the start of the block read by scenedump_read
+  free((void*)s->io); //io is the start of the block read by scenedump_read
   memset(s, 0, sizeof *s);
 }

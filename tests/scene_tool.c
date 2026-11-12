@@ -1,14 +1,14 @@
-// scene_tool.c: looks at the scene dumps in scenes/ (see runtime/scenedump.h).
+//scene_tool.c: looks at the scene dumps in scenes/ (see runtime/scenedump.h).
 //
-// Usage:
-//   scene_tool info scenes/scene-X.dscn          what is in the file
-//   scene_tool bmp scenes/scene-X.dscn out.bmp   the stored picture as a bitmap (transparent =
-//   checker) scene_tool list scenes                       one line per scene: scale, polygons,
-//   textures
-// Build from the project folder:
-//   clang -Iruntime -Itests tests/scene_tool.c runtime/scenedump.c -o tests/scene_tool.exe
-// Why: the dumps are binary and hold the picture the CPU drawing made. This shows them without the
-// game. The files hold game data: keep the output pictures out of git too.
+//Usage:
+//  scene_tool info scenes/scene-X.dscn          what is in the file
+//  scene_tool bmp scenes/scene-X.dscn out.bmp   the stored picture as a bitmap (transparent =
+//  checker) scene_tool list scenes                       one line per scene: scale, polygons,
+//  textures
+//build from the project folder:
+//  clang -Iruntime -Itests tests/scene_tool.c runtime/scenedump.c -o tests/scene_tool.exe
+//why: the dumps are binary and hold the picture the CPU drawing made. This shows them without the
+//game. The files hold game data: keep the output pictures out of git too.
 #include "scenedump.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,7 +87,7 @@ static int write_bmp(const char* path, const Scene* s)
       uint16_t c = s->color[i];
       int r = (c & 31) * 255 / 31, g = (c >> 5 & 31) * 255 / 31, b = (c >> 10 & 31) * 255 / 31;
       if (s->alpha[i] == 0)
-        r = g = b = ((x / 8 + y / 8) & 1) ? 90 : 60; // checker for transparent
+        r = g = b = ((x / 8 + y / 8) & 1) ? 90 : 60; //checker for transparent
       fputc(b, f);
       fputc(g, f);
       fputc(r, f);

@@ -1,4 +1,4 @@
-// Settings file rules: see inifile.h.
+//Settings file rules: see inifile.h.
 #include "inifile.h"
 #include <string.h>
 

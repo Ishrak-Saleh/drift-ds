@@ -1,6 +1,6 @@
 //test_keys.c: checks for runtime/keys.c. no framework, prints one line per failure
 //build and run from the project folder:
-//  clang -Iruntime tests/test_keys.c runtime/keys.c -o tests/test_keys.exe && tests/test_keys.exe
+// clang -Iruntime tests/test_keys.c runtime/keys.c -o tests/test_keys.exe && tests/test_keys.exe
 #include "keys.h"
 #include <stdio.h>
 #include <string.h>

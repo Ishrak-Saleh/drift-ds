@@ -1,4 +1,4 @@
-// OpenGL function loader. See glload.h.
+//OpenGL function loader. See glload.h.
 #include "glload.h"
 #include <stdio.h>
 #include <string.h>
@@ -7,7 +7,7 @@
 GL_FUNCS(X)
 #undef X
 
-// wglGetProcAddress can answer 0, 1, 2, 3 or -1 for a function it does not have
+//wglGetProcAddress can answer 0, 1, 2, 3 or -1 for a function it does not have
 static void* lookup(const char* name)
 {
   void* p = (void*)wglGetProcAddress(name);

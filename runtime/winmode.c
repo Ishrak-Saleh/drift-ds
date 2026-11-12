@@ -1,8 +1,8 @@
-// Window mode rules: see winmode.h.
+//Window mode rules: see winmode.h.
 #include "winmode.h"
 #include <string.h>
 
-// text equals word, ignoring case and spaces at both ends
+//text equals word, ignoring case and spaces at both ends
 static int same_word(const char* text, const char* word)
 {
   while (*text == ' ' || *text == '\t')
@@ -39,7 +39,7 @@ int winmode_parse(const char* text, int old_fullscreen_flag)
   return old_fullscreen_flag == 1 ? WINMODE_BORDERLESS : WINMODE_WINDOWED;
 }
 
-// reads digits at *p into *value and moves *p past them. 0 if there are none or the number is huge
+//reads digits at *p into *value and moves *p past them. 0 if there are none or the number is huge
 static int read_number(const char** p, long* value)
 {
   long v = 0;
@@ -81,7 +81,7 @@ int winmode_parse_size(const char* text, int* width, int* height)
   while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
     p++;
   if (*p)
-    return 0; // something after the two numbers
+    return 0; //something after the two numbers
   if (w < 320 || w > 16384 || h < 320 || h > 16384)
     return 0;
   *width = (int)w;

@@ -1,12 +1,12 @@
-// OpenGL function loader for the GPU 3D drawing (OpenGL 4.5 core).
+//OpenGL function loader for the GPU 3D drawing (OpenGL 4.5 core).
 //
-// Where it fits: Windows only gives OpenGL 1.1 directly (opengl32.dll). Everything newer is looked
-// up by name at run time, after a context exists. This file declares those functions and fills
-// them in (gl_load). glctx.c calls it once the 4.5 context is current.
-// Why: the GPU drawing needs shaders, framebuffers and fences, which are all newer than 1.1.
+//where it fits: Windows only gives OpenGL 1.1 directly (opengl32.dll). Everything newer is looked
+//up by name at run time, after a context exists. This file declares those functions and fills
+//them in (gl_load). glctx.c calls it once the 4.5 context is current.
+//why: the GPU drawing needs shaders, framebuffers and fences, which are all newer than 1.1.
 //
-// The list is one table (GL_FUNCS): the declaration, the definition and the lookup are made from
-// it, so a function is added in one place.
+//the list is one table (GL_FUNCS): the declaration, the definition and the lookup are made from
+//it, so a function is added in one place.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -21,7 +21,7 @@ typedef ptrdiff_t GLintptr_;
 typedef char GLchar_;
 typedef struct __GLsync_* GLsync_;
 
-// constants that are not in the OpenGL 1.1 header
+//constants that are not in the OpenGL 1.1 header
 #define GLX_VERTEX_SHADER 0x8B31
 #define GLX_FRAGMENT_SHADER 0x8B30
 #define GLX_COMPILE_STATUS 0x8B81
@@ -134,7 +134,7 @@ typedef struct __GLsync_* GLsync_;
 GL_FUNCS(X)
 #undef X
 
-// Looks every function of GL_FUNCS up. Needs a current OpenGL context. Returns 1 when all were
-// found. Otherwise returns 0 and, when missing is not NULL, copies the name of the first missing
-// function into it (at most missing_size bytes).
+//looks every function of GL_FUNCS up. Needs a current OpenGL context. Returns 1 when all were
+//found. Otherwise returns 0 and, when missing is not NULL, copies the name of the first missing
+//function into it (at most missing_size bytes).
 int gl_load(char* missing, size_t missing_size);

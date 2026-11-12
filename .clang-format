@@ -10,3 +10,6 @@ AllowShortFunctionsOnASingleLine: None
 SortIncludes: Never
 PointerAlignment: Left
 AlignTrailingComments: false
+SpacesInLineCommentPrefix:
+  Minimum: 0
+  Maximum: -1
