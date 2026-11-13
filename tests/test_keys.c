@@ -127,7 +127,7 @@ int main(void) {
     CHECK(bind_parse(&b, BTN_Y, "A,B,C") == 2);               //a third name is ignored
     CHECK(bind_parse(&b, BTN_Y, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") == 0);   //long text does not overflow
 
-    //load: preset first, then TECLA lines on top
+    //load: preset first, then KEY_ lines on top
     fake_count = 0;
     bind_load(&b, fake_get);
     CHECK(b.key[BTN_A][0] == TK_W);                           //no settings gives the wasd default

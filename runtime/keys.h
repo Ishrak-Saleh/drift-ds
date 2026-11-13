@@ -17,7 +17,7 @@
 //
 //settings text in settings.ini
 //  PRESET=wasd or PRESET=classic
-//  TECLA_A=W,Enter   one line per DS button: TECLA_A B X Y L R START SELECT UP DOWN LEFT RIGHT
+//  KEY_A=W,Enter   one line per DS button: KEY_A B X Y L R START SELECT UP DOWN LEFT RIGHT
 //  the value lists slot 1 and slot 2. an empty value clears the button. a missing line keeps the
 //  preset
 #pragma once
@@ -111,7 +111,7 @@ extern "C"
   //names. all lookups ignore case. unknown and reserved names give TK_NONE or -1
   const char* key_name(int key); //"W". empty text for TK_NONE and bad ids
   int key_from_name(const char* name);
-  const char* button_name(DsButton button); //"A", "START". the text used after TECLA_
+  const char* button_name(DsButton button); //"A", "START". the text used after KEY_
   int button_from_name(const char* name);
   const char* preset_name(Preset preset); //"wasd", "classic"
   int preset_from_name(const char* name);
@@ -125,8 +125,8 @@ extern "C"
   int bind_parse(Bindings* b, DsButton button,
                  const char* text); //sets both slots from "W,Enter". returns keys accepted
 
-  //load from settings. get(name) returns the value of PRESET or TECLA_x, or NULL when the line is
-  //missing order: preset first, then each TECLA_ line on top of it
+  //load from settings. get(name) returns the value of PRESET or KEY_x, or NULL when the line is
+  //missing order: preset first, then each KEY_ line on top of it
   typedef const char* (*SettingGetter)(const char* name);
   void bind_load(Bindings* b, SettingGetter get);
   void bind_load_env(

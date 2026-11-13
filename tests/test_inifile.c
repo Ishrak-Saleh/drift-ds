@@ -28,6 +28,19 @@ static int cleans_to(const char* text, const char* expected)
   return !strcmp(buffer, expected);
 }
 
+//splits a copy of the line and says whether the key and value are the expected ones. A NULL
+//expected key means the line must be skipped
+static int splits_to(const char* text, const char* key, const char* value)
+{
+  char buffer[128], *k = NULL, *v = NULL;
+  snprintf(buffer, sizeof buffer, "%s", text);
+  int got = ini_split(buffer, &k, &v);
+  int ok = key ? got && !strcmp(k, key) && !strcmp(v, value) : !got;
+  if (!ok)
+    printf("  \"%s\" gave %d \"%s\" \"%s\"\n", text, got, got ? k : "", got ? v : "");
+  return ok;
+}
+
 int main(void)
 {
   //a note after a value is cut off, with the blanks before it

@@ -194,6 +194,9 @@ void name_per_frame(void)
 //(SCALE -> DRIFT_SCALE, FULLSCREEN -> DRIFT_FULLSCREEN, NAME -> DRIFT_NAME).
 //A line that starts with # is a comment, and so is the end of a line after " #" (see inifile.h).
 //What is already set in the environment wins.
+static int settings_keys; //lines read from settings.ini
+static char settings_unknown[200]; //names of keys the game does not know, for the log
+
 static void read_settings(void)
 {
   FILE* f = fopen("settings.ini", "r");
@@ -202,16 +205,19 @@ static void read_settings(void)
   char line[256];
   while (fgets(line, sizeof line, f))
   {
-    line[strcspn(line, "\r\n")] = 0;
-    char* same = strchr(line, '=');
-    if (!same || line[0] == '#' || line[0] == ';' || line[0] == '[')
+    char *key, *value;
+    if (!ini_split(line, &key, &value))
       continue;
-    *same = 0;
+    settings_keys++;
+    if (!ini_key_known(key) && strlen(settings_unknown) + strlen(key) + 2 < sizeof settings_unknown)
+    {
+      strcat(settings_unknown, settings_unknown[0] ? " " : "");
+      strcat(settings_unknown, key);
+    }
     char var[64];
-    snprintf(var, sizeof var, "DRIFT_%s", line);
-    ini_clean_value(same + 1); //a note after the value (" # ...") is not part of it
+    snprintf(var, sizeof var, "DRIFT_%s", key);
     if (!getenv(var))
-      _putenv_s(var, same + 1);
+      _putenv_s(var, value);
   }
   fclose(f);
 }
@@ -351,6 +357,9 @@ static int boot(void)
   go_to_game_folder();
   read_settings();
   log_init();
+  log_msg("settings", "settings.ini: %d settings read", settings_keys);
+  if (settings_unknown[0])
+    log_msg("settings", "not known, ignored: %s", settings_unknown);
   apply_power_setting();
   size_t n;
   FILE* has = fopen("rom/game.nds", "rb");

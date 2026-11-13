@@ -1075,10 +1075,10 @@ static void prepare_firmware(void)
   u[0x62] = 224;
   u[0x63] = 160;
   //console language (the European game uses it): 1 English, 2 French, 3 German, 4 Italian, 5
-  //Spanish. DRIFT_LANGUAGE (LANGUAGE in settings.ini). Spanish by default
-  int language = getenv("DRIFT_LANGUAGE") ? atoi(getenv("DRIFT_LANGUAGE")) : 5;
+  //Spanish. DRIFT_LANGUAGE (LANGUAGE in settings.ini). English by default
+  int language = getenv("DRIFT_LANGUAGE") ? atoi(getenv("DRIFT_LANGUAGE")) : 1;
   if (language < 1 || language > 5)
-    language = 5;
+    language = 1;
   u[0x64] = (uint8_t)(language | (3 << 4)); //and maximum brightness
   u[0x70] = 1; //save counter
   uint16_t crc = crc16(0xFFFF, u, 0x70);

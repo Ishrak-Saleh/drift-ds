@@ -498,6 +498,12 @@ static int key_event(int key, int down)
   return 0;
 }
 
+//for microphone.c (MIC_KEY): is the key held now. 0 when the window lost focus
+int window_key_held(int key)
+{
+  return key > 0 && key < TK_COUNT && key_down[key];
+}
+
 static void mouse(LPARAM lp, int is_down)
 {
   if (dst_w <= 0 || dst_h <= 0)
